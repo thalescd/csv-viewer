@@ -1,0 +1,2 @@
+# Dependencies needed to run the test suite (not required to run the app itself).
+pytest>=7

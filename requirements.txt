@@ -1,0 +1,3 @@
+# Optional -- only needed for drag-and-drop of files onto the window.
+# Without it installed, the app works normally, just without that feature.
+tkinterdnd2

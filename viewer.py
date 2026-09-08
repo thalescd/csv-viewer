@@ -113,6 +113,16 @@ CONFIG_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 
+def same_file_key(path):
+    """A comparable key for "is this the same file?".
+
+    The same file reaches us written in different ways -- relative from the
+    command line, absolute from a drop, with either slash on Windows, in any
+    casing -- so paths are resolved and normalized before being compared.
+    """
+    return os.path.normcase(os.path.realpath(path))
+
+
 def resource_path(*parts):
     """Absolute path to a bundled resource.
 
@@ -1413,10 +1423,30 @@ class CSVViewerApp(_AppBase):
         for p in paths:
             self.open_file(p)
 
+    def _find_open_tab(self, path):
+        """The tab already showing this file, if any."""
+        key = same_file_key(path)
+        for tab_id in self.notebook.tabs():
+            tab = self.nametowidget(tab_id)
+            if isinstance(tab, CSVTab) and tab.filepath and same_file_key(tab.filepath) == key:
+                return tab
+        return None
+
     def open_file(self, path):
         if not os.path.isfile(path):
             messagebox.showerror("File not found", path)
             return
+        self._add_recent(path)
+
+        # already open: focus that tab instead of stacking a duplicate. The
+        # content is left as it is -- re-opening a file should not silently
+        # throw away the sorting and column layout; "Reload" does that on purpose.
+        already_open = self._find_open_tab(path)
+        if already_open is not None:
+            self.notebook.select(already_open)
+            already_open._flash_status("Already open")
+            return
+
         # remove the empty-hint tab, if it's the only one
         tabs = self.notebook.tabs()
         if len(tabs) == 1 and self.notebook.tab(tabs[0], "text") == "(empty)":
@@ -1431,7 +1461,6 @@ class CSVViewerApp(_AppBase):
         )
         self.notebook.add(tab, text=os.path.basename(path))
         self.notebook.select(tab)
-        self._add_recent(path)
 
     def _dispatch_to_current_tab(self, method_name):
         tab_id = self.notebook.select()

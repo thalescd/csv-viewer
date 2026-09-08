@@ -15,8 +15,11 @@ import contextlib
 import csv
 import json
 import os
+import queue
 import re
+import socket
 import sys
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
@@ -135,6 +138,93 @@ def save_config(config):
             json.dump(config, f)
     except OSError:
         pass  # don't crash the app if saving fails (e.g. no permission)
+
+
+# ---------- single instance ----------
+# Opening a file from Explorer launches the program once per file, which would
+# mean one window per file. Instead, the first instance listens on a loopback
+# socket; later ones hand their file list over and exit, so files pile up as
+# tabs in the window that is already open (Notepad++ style).
+SINGLE_INSTANCE_HOST = "127.0.0.1"
+SINGLE_INSTANCE_PORT = 49731
+# The handshake reply. Any local process can grab our port, so the sender only
+# trusts a listener that answers with this exact token -- otherwise it assumes
+# the port belongs to something else and opens its own window instead.
+INSTANCE_ACK = b"CSVVIEWER-OK\n"
+
+
+def encode_paths(paths):
+    return (json.dumps(list(paths)) + "\n").encode("utf-8")
+
+
+def decode_paths(data):
+    """Parses a payload back into a list of paths, tolerating any garbage."""
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [p for p in payload if isinstance(p, str)]
+
+
+class SingleInstanceServer:
+    """Listens for file lists sent by other instances of this program.
+
+    Received paths land on `self.queue`. They are NOT acted on here: this runs
+    on a background thread, and Tkinter may only be touched from the main
+    thread, so the UI drains the queue on its own timer.
+
+    Raises OSError if the port is already taken (meaning another instance --
+    or some unrelated program -- got there first).
+    """
+
+    def __init__(self, host=SINGLE_INSTANCE_HOST, port=SINGLE_INSTANCE_PORT):
+        self.queue = queue.Queue()
+        self._closed = False
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self._sock.bind((host, port))
+            self._sock.listen(8)
+        except OSError:
+            self._sock.close()
+            raise
+        self.port = self._sock.getsockname()[1]
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while not self._closed:
+            try:
+                conn, _addr = self._sock.accept()
+            except OSError:
+                return  # socket closed, we are shutting down
+            with conn, contextlib.suppress(OSError):
+                conn.settimeout(1.0)
+                data = conn.recv(65536)
+                self.queue.put(decode_paths(data))
+                conn.sendall(INSTANCE_ACK)
+
+    def close(self):
+        self._closed = True
+        with contextlib.suppress(OSError):
+            self._sock.close()
+
+
+def send_paths_to_running_instance(paths, host=SINGLE_INSTANCE_HOST,
+                                   port=SINGLE_INSTANCE_PORT, timeout=1.0):
+    """Hands `paths` to an instance that is already running.
+
+    Returns True only when a listener answered with our handshake token, so a
+    caller that gets True can safely exit knowing the files were taken over.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.sendall(encode_paths(paths))
+            s.settimeout(timeout)
+            return s.recv(len(INSTANCE_ACK)) == INSTANCE_ACK
+    except OSError:
+        return False
 
 
 def sniff_delimiter(sample_text, fallback_from_ext=None):
@@ -1020,7 +1110,7 @@ _AppBase = TkinterDnD.Tk if HAS_DND else tk.Tk
 
 
 class CSVViewerApp(_AppBase):
-    def __init__(self, initial_files=None):
+    def __init__(self, initial_files=None, instance_server=None):
         super().__init__()
         self.title("CSV Viewer" + ("" if HAS_DND else "  (drag-and-drop unavailable: pip install tkinterdnd2)"))
         self.geometry("1000x600")
@@ -1061,6 +1151,52 @@ class CSVViewerApp(_AppBase):
 
         if not self.notebook.tabs():
             self._show_empty_hint()
+
+        self._instance_server = instance_server
+        if instance_server is not None:
+            self._poll_instance_queue()
+
+    # ---------- single instance ----------
+    def _poll_instance_queue(self):
+        """Drains files handed over by other instances.
+
+        The listener runs on a background thread and only parks paths on a
+        queue; opening tabs has to happen here, on the main thread, because
+        Tkinter is not thread-safe.
+        """
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        handled = False
+        while True:
+            try:
+                paths = self._instance_server.queue.get_nowait()
+            except queue.Empty:
+                break
+            handled = True
+            for path in paths:
+                self.open_file(path)
+        if handled:
+            # a second launch should surface the window, even with no file
+            # (e.g. the user started the program again from the Start menu)
+            self._bring_to_front()
+
+        with contextlib.suppress(tk.TclError):
+            self.after(200, self._poll_instance_queue)
+
+    def _bring_to_front(self):
+        with contextlib.suppress(tk.TclError):
+            if self.state() == "iconic":
+                self.deiconify()
+            self.lift()
+            # brief topmost flip: on Windows a background process is not
+            # allowed to steal focus outright, but this does raise the window
+            self.attributes("-topmost", True)
+            self.after(150, lambda: self.attributes("-topmost", False))
+            self.focus_force()
 
     def _set_window_icon(self):
         """Uses the bundled .ico when available (Windows); silently keeps the
@@ -1334,7 +1470,30 @@ class CSVViewerApp(_AppBase):
             self._show_empty_hint()
 
 
-if __name__ == "__main__":
-    files = sys.argv[1:]
-    app = CSVViewerApp(initial_files=files)
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    force_new_window = "--new-window" in argv
+    files = [a for a in argv if not a.startswith("--")]
+
+    server = None
+    if not force_new_window:
+        try:
+            # binding is the claim: whoever gets the port is the main instance
+            server = SingleInstanceServer()
+        except OSError:
+            # somebody already holds the port -- hand our files over and quit,
+            # so they show up as tabs there instead of in a second window
+            if send_paths_to_running_instance(files):
+                return 0
+            # no answer to our handshake: the port belongs to an unrelated
+            # program, so just carry on and open a window of our own
+
+    app = CSVViewerApp(initial_files=files, instance_server=server)
     app.mainloop()
+    if server is not None:
+        server.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

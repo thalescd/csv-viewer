@@ -36,6 +36,9 @@ single script, and a UI that stays fast and simple even on very large files.
 - **Drag and drop** files onto the window to open them in a new tab
   (requires the optional `tkinterdnd2` dependency).
 - **Middle-click a tab** to close it, browser style.
+- **Single instance** -- opening a second file (from Explorer, the command
+  line, anywhere) adds a tab to the window that is already open instead of
+  spawning another window. Pass `--new-window` to opt out.
 
 ## Requirements
 
@@ -53,7 +56,13 @@ pip install -r requirements.txt
 python viewer.py                     # opens empty
 python viewer.py data.csv            # opens one file
 python viewer.py a.csv b.tsv         # opens several, one tab each
+python viewer.py data.csv --new-window   # force a separate window
 ```
+
+If the viewer is already running, these commands hand the files to it and
+exit, so everything ends up as tabs in one window. That handoff happens over
+a loopback socket (`127.0.0.1:49731`), which doubles as the lock deciding
+which process is the main one.
 
 Settings (zoom, dark mode, recent files) are stored in
 `%APPDATA%\CSVViewer\config.json` on Windows (or `~/CSVViewer/config.json`

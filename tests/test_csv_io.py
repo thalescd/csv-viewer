@@ -57,7 +57,7 @@ class TestReadCsvFile:
         p = tmp_path / "data.csv"
         p.write_text("a;b\n1;2\n", encoding="utf-8")
 
-        header, rows, delimiter, _ = viewer.read_csv_file(str(p), delimiter=";")
+        header, _rows, delimiter, _ = viewer.read_csv_file(str(p), delimiter=";")
 
         assert delimiter == ";"
         assert header == ["a", "b"]

@@ -11,6 +11,7 @@ Lightweight CSV/TSV viewer.
 Dependencies: none beyond the Python stdlib.
 Optional: tkinterdnd2 (drag-and-drop) -- pip install tkinterdnd2
 """
+import contextlib
 import csv
 import json
 import os
@@ -19,10 +20,10 @@ import sys
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 try:
-    from tkinterdnd2 import TkinterDnD, DND_FILES
+    from tkinterdnd2 import DND_FILES, TkinterDnD
     HAS_DND = True
 except ImportError:
     HAS_DND = False
@@ -111,9 +112,9 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 def load_config():
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
             return json.load(f)
-    except (IOError, OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         return {}
 
 
@@ -146,14 +147,14 @@ def read_csv_file(path, delimiter=None):
     used_encoding = None
     for enc in encodings_to_try:
         try:
-            with open(path, "r", encoding=enc, newline="") as f:
+            with open(path, encoding=enc, newline="") as f:
                 text = f.read()
             used_encoding = enc
             break
         except UnicodeDecodeError:
             continue
     if text is None:
-        raise IOError(f"Could not decode file: {path}")
+        raise OSError(f"Could not decode file: {path}")
 
     if delimiter is None:
         sample = text[:4096]
@@ -410,10 +411,8 @@ class CSVTab(ttk.Frame):
     def _flash_status(self, text, ms=1800):
         """Shows a temporary message in the status bar (e.g. copy confirmation)."""
         if self._flash_after_id is not None:
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._flash_after_id)
-            except tk.TclError:
-                pass
         self._flash_var.set(text)
         self._flash_after_id = self.after(ms, lambda: self._flash_var.set(""))
 
@@ -450,10 +449,8 @@ class CSVTab(ttk.Frame):
         self._pan_active = False
         self.tree.config(cursor="")
         if self._pan_after_id is not None:
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._pan_after_id)
-            except tk.TclError:
-                pass
             self._pan_after_id = None
 
     def _pan_tick(self):
@@ -483,10 +480,8 @@ class CSVTab(ttk.Frame):
         if sy:
             self.tree.yview_scroll(sy, "units")
 
-        try:
+        with contextlib.suppress(tk.TclError):
             self._pan_after_id = self.after(PAN_TICK_MS, self._pan_tick)
-        except tk.TclError:
-            pass
 
     def _build_statusbar(self):
         bar = ttk.Frame(self)
@@ -544,7 +539,7 @@ class CSVTab(ttk.Frame):
         warn = "  (large file, may be slow)" if n_rows > MAX_ROWS_WARN else ""
         self.status_var.set(
             f"{os.path.basename(filepath)}  |  {n_rows} rows x {len(header)} columns  "
-            f"|  delimiter: {repr(used_delim)}  |  encoding: {used_enc}{warn}"
+            f"|  delimiter: {used_delim!r}  |  encoding: {used_enc}{warn}"
         )
 
     def reload(self):
@@ -607,10 +602,8 @@ class CSVTab(ttk.Frame):
     def _on_search_text_changed(self):
         # small delay so we don't redo the whole search on every fast keystroke
         if self._search_after_id is not None:
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._search_after_id)
-            except tk.TclError:
-                pass
         self._search_after_id = self.after(200, self._run_search)
 
     def _run_search(self):
@@ -818,10 +811,8 @@ class CSVTab(ttk.Frame):
 
         if not self.winfo_ismapped():
             # tab not visible right now: reschedule less often to save work
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.after(400, self._reposition_separators)
-            except tk.TclError:
-                pass
             return
 
         cols = list(self.tree["displaycolumns"])
@@ -856,10 +847,8 @@ class CSVTab(ttk.Frame):
         for extra in self._sep_frames[len(boundaries):]:
             extra.place_forget()
 
-        try:
+        with contextlib.suppress(tk.TclError):
             self.after(150, self._reposition_separators)
-        except tk.TclError:
-            pass
 
     # ---------- sorting ----------
     def _sort_by(self, col_id):
@@ -928,10 +917,8 @@ class CSVTab(ttk.Frame):
 
     def _cancel_pending_sort(self):
         if self._pending_sort_after_id is not None:
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._pending_sort_after_id)
-            except tk.TclError:
-                pass
             self._pending_sort_after_id = None
 
     def _commit_sort(self, col_id):
@@ -1129,7 +1116,8 @@ class CSVViewerApp(_AppBase):
             self.style.configure("TLabel", background=p["app_bg"], foreground=p["fg"])
             self.style.configure("TButton", background=p["heading_bg"], foreground=p["fg"])
             self.style.configure("TCheckbutton", background=p["app_bg"], foreground=p["fg"])
-            self.style.configure("TCombobox", fieldbackground=p["entry_bg"], background=p["heading_bg"], foreground=p["fg"])
+            self.style.configure("TCombobox", fieldbackground=p["entry_bg"],
+                                 background=p["heading_bg"], foreground=p["fg"])
             self.style.configure("TEntry", fieldbackground=p["entry_bg"], foreground=p["fg"])
             self.style.configure("TNotebook", background=p["app_bg"])
             self.style.configure("TNotebook.Tab", background=p["heading_bg"], foreground=p["fg"])
@@ -1142,22 +1130,24 @@ class CSVViewerApp(_AppBase):
             self.style.configure("Treeview.Heading", background=p["heading_bg"], foreground=p["heading_fg"])
             self.style.configure("TScrollbar", background=p["heading_bg"], troughcolor=p["app_bg"])
             self.configure(bg=p["app_bg"])
-            menu_colors = dict(bg=p["menu_bg"], fg=p["menu_fg"],
-                                activebackground=p["menu_active_bg"], activeforeground=p["menu_active_fg"])
+            menu_colors = {
+                "bg": p["menu_bg"], "fg": p["menu_fg"],
+                "activebackground": p["menu_active_bg"], "activeforeground": p["menu_active_fg"],
+            }
         else:
             self.style.theme_use(self._native_theme)
             self.configure(bg="SystemButtonFace")
-            menu_colors = dict(bg="SystemMenu", fg="SystemMenuText",
-                                activebackground="SystemHighlight", activeforeground="SystemHighlightText")
+            menu_colors = {
+                "bg": "SystemMenu", "fg": "SystemMenuText",
+                "activebackground": "SystemHighlight", "activeforeground": "SystemHighlightText",
+            }
 
         self._menu_colors = menu_colors
         for menu in (self._menubar, self._file_menu, self._view_menu, getattr(self, "_recent_menu", None)):
             if menu is None:
                 continue
-            try:
+            with contextlib.suppress(tk.TclError):
                 menu.configure(**menu_colors)
-            except tk.TclError:
-                pass
         # zoom affects the Treeview's font/height -- reapply it on top of the theme that just changed
         self._apply_zoom_style()
 
@@ -1204,10 +1194,8 @@ class CSVViewerApp(_AppBase):
                 )
         menu_colors = getattr(self, "_menu_colors", None)
         if menu_colors:
-            try:
+            with contextlib.suppress(tk.TclError):
                 self._recent_menu.configure(**menu_colors)
-            except tk.TclError:
-                pass
 
     def _on_root_drop(self, event):
         paths = self.tk.splitlist(event.data)

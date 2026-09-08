@@ -1,0 +1,17 @@
+# Ruff configuration. Rules are pinned explicitly so CI behaviour doesn't drift
+# when ruff changes its defaults between releases.
+line-length = 120
+target-version = "py39"
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes (unused imports/variables, undefined names)
+    "I",    # isort (import ordering)
+    "UP",   # pyupgrade (outdated syntax)
+    "B",    # flake8-bugbear (likely bugs)
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]

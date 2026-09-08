@@ -20,8 +20,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install test dependencies
+      - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
 
       - name: Syntax check
         run: python -m py_compile viewer.py

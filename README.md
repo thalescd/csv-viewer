@@ -95,8 +95,9 @@ currently associated with `.csv`/`.tsv` (e.g. Excel).
 
 ```
 viewer.py             # the whole app (single file, no packages)
+ruff.toml             # lint configuration
 requirements.txt      # optional runtime dependency (tkinterdnd2)
-requirements-dev.txt  # test-only dependency (pytest)
+requirements-dev.txt  # dev dependencies (pytest, ruff)
 examples/sample.csv   # a small file to try the viewer with
 tests/                # unit tests for the non-UI logic
 ```
@@ -109,10 +110,12 @@ fine in a headless CI environment.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -v
+pytest -v        # run the tests
+ruff check .     # lint (config in ruff.toml)
+ruff check . --fix
 ```
 
-Tests run automatically on every push via GitHub Actions
+Linting and tests run automatically on every push via GitHub Actions
 (`.github/workflows/tests.yml`).
 
 ## License

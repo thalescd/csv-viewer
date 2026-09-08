@@ -110,6 +110,16 @@ CONFIG_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 
+def resource_path(*parts):
+    """Absolute path to a bundled resource.
+
+    Works both when running from source and from a PyInstaller build, which
+    unpacks bundled data into a temporary folder pointed at by sys._MEIPASS.
+    """
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, *parts)
+
+
 def load_config():
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
@@ -1014,6 +1024,7 @@ class CSVViewerApp(_AppBase):
         super().__init__()
         self.title("CSV Viewer" + ("" if HAS_DND else "  (drag-and-drop unavailable: pip install tkinterdnd2)"))
         self.geometry("1000x600")
+        self._set_window_icon()
 
         self._config = load_config()
         self._init_zoom()
@@ -1050,6 +1061,14 @@ class CSVViewerApp(_AppBase):
 
         if not self.notebook.tabs():
             self._show_empty_hint()
+
+    def _set_window_icon(self):
+        """Uses the bundled .ico when available (Windows); silently keeps the
+        default Tk icon elsewhere or if the file is missing."""
+        icon = resource_path("assets", "icon.ico")
+        if os.path.isfile(icon):
+            with contextlib.suppress(tk.TclError):
+                self.iconbitmap(icon)
 
     # ---------- zoom (affects font/row height for all tabs) ----------
     def _init_zoom(self):

@@ -1,3 +1,5 @@
 # Dependencies for development (not required to run the app itself).
 pytest>=7
 ruff>=0.16
+pyinstaller>=5.9   # building the standalone executable
+pillow>=10         # only needed to regenerate assets/icon.ico

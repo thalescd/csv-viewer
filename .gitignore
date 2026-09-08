@@ -4,8 +4,11 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-*.spec
 .pytest_cache/
+
+# PyInstaller writes throwaway .spec files for ad-hoc builds; ours is tracked
+*.spec
+!csv-viewer.spec
 
 # Virtual environments
 .venv/

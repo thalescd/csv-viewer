@@ -86,17 +86,36 @@ single tidy `.exe`, but it unpacks itself into a temp folder on every launch:
 
 | Build | Startup | Size on disk |
 |---|---|---|
-| one-folder (this spec) | ~0.2 s | 22 MB (folder) |
+| one-folder (this spec) | ~0.2 s | 17 MB (folder) |
 | `--onefile` | ~1.0 s | 9 MB (single file) |
 
 For a program whose whole job is to open instantly when you double-click a
 CSV, the 5x faster start is worth more than the tidier folder.
 
+The spec also trims what PyInstaller would otherwise bundle by default:
+OpenSSL (~4 MB, reachable only through imports the app never makes) and the
+tkdnd builds for other operating systems (~1.2 MB) — together about a quarter
+of the build.
+
 ### Associate `.csv`/`.tsv` with the viewer (Windows)
 
-With a built `.exe`, right-click any `.csv` → **Open with** → **Choose another
-app** → **Browse** to `dist\CSVViewer\CSVViewer.exe`, and tick *Always use
-this app*. No administrator rights needed.
+First copy the build somewhere permanent. Do **not** associate files with
+`dist\`: that folder is build output, and the association breaks the moment
+the project is cleaned or moved.
+
+```powershell
+$dest = "$env:LOCALAPPDATA\Programs\CSVViewer"
+Copy-Item dist\CSVViewer $dest -Recurse -Force
+```
+
+Then right-click any `.csv` → **Open with** → **Choose another app** →
+**Browse** to `%LOCALAPPDATA%\Programs\CSVViewer\CSVViewer.exe`, and tick
+*Always use this app*. No administrator rights needed.
+
+Note that no program can make *itself* the default handler on Windows 8 or
+newer: the association is stored under a hash-protected `UserChoice` registry
+key that only the OS may write. Picking the default is always the user's
+call, through the dialog above or *Settings → Apps → Default apps*.
 
 To run it from source instead (no `.exe`), you have to register the
 association by hand, from an **elevated** command prompt:

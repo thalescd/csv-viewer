@@ -8,12 +8,31 @@ Build with:
 Produces dist/CSVViewer/CSVViewer.exe (one-folder build: starts fast because
 nothing has to be unpacked at launch, unlike a --onefile build).
 """
+import os
+import sys
+
 from PyInstaller.utils.hooks import collect_data_files
 
 # tkinterdnd2 ships a Tcl/Tk extension (the tkdnd folder) that PyInstaller
 # does not pick up on its own -- without this, drag-and-drop breaks in the build.
-datas = collect_data_files("tkinterdnd2")
+# It ships a copy per OS/architecture, and tkinterdnd2 picks one at runtime, so
+# every folder for a different OS is dead weight (~1.2 MB on a Windows build).
+TKDND_OS = {"win32": "win", "darwin": "osx"}.get(sys.platform, "linux")
+
+datas = [
+    (src, dest) for src, dest in collect_data_files("tkinterdnd2")
+    if "tkdnd" not in dest or os.path.basename(dest).startswith(TKDND_OS)
+]
 datas += [("assets/icon.ico", "assets")]
+
+# Nothing here talks to the network beyond a loopback socket, but PyInstaller
+# still drags in OpenSSL (libcrypto + libssl, ~4 MB) because it follows every
+# import it can reach. Dropping it is the single biggest size win.
+#   ssl/_ssl:  unused outright.
+#   _hashlib:  only reachable through random -> hashlib. Without it, hashlib
+#              falls back to its built-in digests, which is all random needs,
+#              and libcrypto stops being pulled in.
+excludes = ["ssl", "_ssl", "_hashlib"]
 
 a = Analysis(
     ["viewer.py"],
@@ -24,7 +43,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
 )
 

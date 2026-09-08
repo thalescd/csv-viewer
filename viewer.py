@@ -1202,12 +1202,11 @@ class CSVViewerApp(_AppBase):
         self._open_dropped(paths)
 
     def _open_dropped(self, paths):
-        opened, skipped = 0, []
+        skipped = []
         for p in paths:
             ext = os.path.splitext(p)[1].lower()
             if ext in (".csv", ".tsv") and os.path.isfile(p):
                 self.open_file(p)
-                opened += 1
             else:
                 skipped.append(p)
         if skipped:

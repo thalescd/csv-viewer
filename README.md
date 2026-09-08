@@ -21,8 +21,9 @@ single script, and a UI that stays fast and simple even on very large files.
   *Copy cell*.
 - **Clickable links** -- cells that look like a URL are underlined; hold
   `Ctrl` and click to open in the browser.
-- **Find (`Ctrl+F`)** -- search across the whole table, `Enter`/`↓` for the
-  next match, `Shift+Enter`/`↑` for the previous one.
+- **Find (`Ctrl+F`)** -- searches column names as well as cell values, so
+  typing a column name jumps to that column. `Enter`/`↓` for the next match,
+  `Shift+Enter`/`↑` for the previous one.
 - **Zoom (50%-200%)** -- buttons in the status bar, `Ctrl +`/`Ctrl -`/
   `Ctrl 0`, or `Ctrl+scroll`. Persisted across restarts.
 - **Dark mode** -- toggle in the status bar or the View menu. Persisted

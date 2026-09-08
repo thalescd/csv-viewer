@@ -113,6 +113,17 @@ CONFIG_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 
+# Search results are (row, column) pairs. Column names live above the rows
+# rather than in one, so a header hit uses this in place of a row id.
+HEADER_ROW = "#header"
+
+
+def header_match_columns(header, query):
+    """Indexes of the columns whose name contains `query` (case-insensitive)."""
+    q = query.lower()
+    return [i for i, name in enumerate(header) if q in str(name).lower()]
+
+
 def same_file_key(path):
     """A comparable key for "is this the same file?".
 
@@ -479,20 +490,57 @@ class CSVTab(ttk.Frame):
         self._selected_cell = (row, col)
         self._update_cell_highlight()
 
+    def _display_columns(self):
+        """Column ids in the order they are currently shown."""
+        cols = list(self.tree["displaycolumns"])
+        if tuple(cols) == ("#all",):
+            cols = list(self.tree["columns"])
+        return cols
+
+    def _first_visible_item(self):
+        """The topmost row the widget has actually drawn, or None.
+
+        `bbox` only answers for rendered rows, so anything needing pixel
+        coordinates (separator lines, highlights, column borders) has to
+        measure from one of these.
+        """
+        cols = self._display_columns()
+        if not cols:
+            return None
+        for iid in self.tree.get_children("")[:200]:
+            if self.tree.bbox(iid, cols[0]):
+                return iid
+        return None
+
     def _hide_cell_highlight(self):
         for f in self._cell_highlight_frames:
             f.place_forget()
+
+    def _cell_rect(self, row, col):
+        """Pixel rect (x, y, w, h) of a cell, or of a column header when
+        `row` is HEADER_ROW. None when it is not on screen."""
+        if row == HEADER_ROW:
+            probe = self._first_visible_item()
+            if probe is None:
+                return None
+            bbox = self.tree.bbox(probe, col)
+            if not bbox:
+                return None
+            x, _y, w, _h = bbox
+            return (x, 0, w, self._header_height())
+        if not self.tree.exists(row):
+            return None
+        return self.tree.bbox(row, col) or None
 
     def _update_cell_highlight(self):
         if not self._selected_cell:
             self._hide_cell_highlight()
             return
-        row, col = self._selected_cell
-        bbox = self.tree.bbox(row, col)
-        if not bbox:
+        rect = self._cell_rect(*self._selected_cell)
+        if rect is None:
             self._hide_cell_highlight()
             return
-        x, y, w, h = bbox
+        x, y, w, h = rect
         color = self.get_palette()["cell_highlight"]
         while len(self._cell_highlight_frames) < 4:
             self._cell_highlight_frames.append(tk.Frame(self.tree, bg=color))
@@ -509,9 +557,13 @@ class CSVTab(ttk.Frame):
         if not self._selected_cell:
             return
         row, col = self._selected_cell
-        if not self.tree.exists(row):
+        if row == HEADER_ROW:  # a search landed on a column name
+            idx = int(col[1:])
+            value = str(self.header[idx]) if idx < len(self.header) else ""
+        elif self.tree.exists(row):
+            value = self.tree.set(row, col)
+        else:
             return
-        value = self.tree.set(row, col)
         self.clipboard_clear()
         self.clipboard_append(value)
         preview = value if len(value) <= 60 else value[:60] + "..."
@@ -729,9 +781,12 @@ class CSVTab(ttk.Frame):
         self._update_search_status()
 
     def _compute_matches(self, query):
-        query = query.lower()
         cols = [f"c{i}" for i in range(len(self.header))]
-        matches = []
+        # column names come first: they sit above the data, and typing one is a
+        # natural way of looking for a column rather than for a value
+        matches = [(HEADER_ROW, cols[i]) for i in header_match_columns(self.header, query)]
+
+        query = query.lower()
         for iid in self.tree.get_children(""):
             for cid in cols:
                 if query in self.tree.set(iid, cid).lower():
@@ -744,20 +799,23 @@ class CSVTab(ttk.Frame):
             return
         self._search_index = (self._search_index + direction) % len(self._search_matches)
         row_iid, col_id = self._search_matches[self._search_index]
-        if self.tree.exists(row_iid):
+        if row_iid == HEADER_ROW:
+            self._ensure_column_visible(col_id)
+            self._selected_cell = (row_iid, col_id)
+            self._update_cell_highlight()
+        elif self.tree.exists(row_iid):
             self.tree.see(row_iid)
-            self._ensure_column_visible(row_iid, col_id)
+            self._ensure_column_visible(col_id)
             self._selected_cell = (row_iid, col_id)
             self._update_cell_highlight()
         self._update_search_status()
 
-    def _ensure_column_visible(self, row_iid, col_id):
-        """Scrolls horizontally if the found column is outside the visible area."""
-        if self.tree.bbox(row_iid, col_id):
+    def _ensure_column_visible(self, col_id):
+        """Scrolls horizontally if the column is outside the visible area."""
+        probe = self._first_visible_item()
+        if probe is not None and self.tree.bbox(probe, col_id):
             return  # already visible
-        cols = list(self.tree["displaycolumns"])
-        if tuple(cols) == ("#all",):
-            cols = list(self.tree["columns"])
+        cols = self._display_columns()
         if col_id not in cols:
             return
         widths = [self.tree.column(c, "width") for c in cols]
@@ -925,25 +983,16 @@ class CSVTab(ttk.Frame):
                 self.after(400, self._reposition_separators)
             return
 
-        cols = list(self.tree["displaycolumns"])
-        if tuple(cols) == ("#all",):
-            cols = list(self.tree["columns"])
+        cols = self._display_columns()
+        visible_item = self._first_visible_item()
 
         boundaries = []
-        children = self.tree.get_children("")
-        visible_item = None
-        if children and cols:
-            # find the first currently visible row (scrolling may have hidden the ones above)
-            for iid in children[:200]:
-                if self.tree.bbox(iid, cols[0]):
-                    visible_item = iid
-                    break
-            if visible_item is not None and len(cols) > 1:
-                for cid in cols[:-1]:
-                    bbox = self.tree.bbox(visible_item, cid)
-                    if bbox:
-                        x, _y, w, _h = bbox
-                        boundaries.append(x + w)
+        if visible_item is not None and len(cols) > 1:
+            for cid in cols[:-1]:
+                bbox = self.tree.bbox(visible_item, cid)
+                if bbox:
+                    x, _y, w, _h = bbox
+                    boundaries.append(x + w)
 
         self._update_link_overlays(cols, visible_item)
 
@@ -1057,22 +1106,11 @@ class CSVTab(ttk.Frame):
     def _column_at_border(self, x, tolerance=4):
         """Finds the column whose right border is near x (uses bbox, so it
         already accounts for the current horizontal scroll -- including past the last column)."""
-        cols = list(self.tree["displaycolumns"])
-        if tuple(cols) == ("#all",):
-            cols = list(self.tree["columns"])
-        children = self.tree.get_children("")
-        if not cols or not children:
-            return None
-
-        visible_item = None
-        for iid in children[:200]:
-            if self.tree.bbox(iid, cols[0]):
-                visible_item = iid
-                break
+        visible_item = self._first_visible_item()
         if visible_item is None:
             return None
 
-        for cid in cols:
+        for cid in self._display_columns():
             bbox = self.tree.bbox(visible_item, cid)
             if not bbox:
                 continue
@@ -1106,9 +1144,7 @@ class CSVTab(ttk.Frame):
         self.tree.column(col_id, width=max_width + 24)  # a bit of breathing room
 
     def _reorder_columns(self, src_col, target_col):
-        cols = list(self.tree["displaycolumns"])
-        if cols == ["#all"]:
-            cols = list(self.tree["columns"])
+        cols = self._display_columns()
         src_i = cols.index(src_col)
         tgt_i = cols.index(target_col)
         cols.pop(src_i)

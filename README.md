@@ -69,6 +69,12 @@ Settings (zoom, dark mode, recent files) are stored in
 `%APPDATA%\CSVViewer\config.json` on Windows (or `~/CSVViewer/config.json`
 elsewhere).
 
+## Download
+
+Grab the latest `CSVViewer-<version>-windows-x64.zip` from the
+[releases page](https://github.com/thalescd/csv-viewer/releases), unzip it
+anywhere, and run `CSVViewer.exe`. No Python installation needed.
+
 ## Building a standalone executable (Windows)
 
 Produces a `CSVViewer.exe` that runs without Python installed:
@@ -173,7 +179,19 @@ ruff check . --fix
 ```
 
 Linting and tests run automatically on every push via GitHub Actions
-(`.github/workflows/tests.yml`).
+(`.github/workflows/tests.yml`), on Windows and Linux.
+
+### Cutting a release
+
+1. Bump `__version__` in `viewer.py`.
+2. Commit, then tag it: `git tag v1.2.3 && git push --tags`.
+
+`.github/workflows/release.yml` takes it from there: it refuses to continue if
+the tag and `__version__` disagree, runs lint and tests, builds the executable,
+checks it actually starts, and publishes the zip to a GitHub release with
+notes generated from the commits. Running the workflow manually
+(*Actions → Release → Run workflow*) does everything except publish, which is
+a way to test the build without tagging.
 
 ## License
 

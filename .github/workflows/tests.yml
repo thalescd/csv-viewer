@@ -8,9 +8,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Windows is the platform this ships on, and some tests only run there
+    # (path casing, slash direction), so they need a Windows runner to execute
+    # at all. Linux is kept as a portability check.
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4

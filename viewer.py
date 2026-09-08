@@ -31,6 +31,11 @@ try:
 except ImportError:
     HAS_DND = False
 
+# Single source of truth for the version. The release workflow refuses to build
+# when the git tag disagrees with this, so a published build can never claim a
+# version it was not tagged as.
+__version__ = "1.0.0"
+
 DELIMITER_PRESETS = [(",", ","), (";", ";"), ("Tab", "\t"), ("|", "|")]
 
 # row-count limit, just a basic memory/UI safeguard
@@ -1344,7 +1349,9 @@ class CSVViewerApp(_AppBase):
             }
 
         self._menu_colors = menu_colors
-        for menu in (self._menubar, self._file_menu, self._view_menu, getattr(self, "_recent_menu", None)):
+        menus = (self._menubar, self._file_menu, self._view_menu,
+                 getattr(self, "_help_menu", None), getattr(self, "_recent_menu", None))
+        for menu in menus:
             if menu is None:
                 continue
             with contextlib.suppress(tk.TclError):
@@ -1439,10 +1446,25 @@ class CSVViewerApp(_AppBase):
         )
         menubar.add_cascade(label="View", menu=view_menu)
 
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="About", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
         self.config(menu=menubar)
         self._menubar = menubar
         self._file_menu = file_menu
         self._view_menu = view_menu
+        self._help_menu = help_menu
+
+    def _show_about(self):
+        dnd = "enabled" if HAS_DND else "unavailable (tkinterdnd2 not installed)"
+        messagebox.showinfo(
+            "About CSV Viewer",
+            f"CSV Viewer {__version__}\n\n"
+            f"A lightweight CSV/TSV viewer built with Python's Tkinter.\n\n"
+            f"Drag-and-drop: {dnd}\n"
+            f"Settings: {CONFIG_FILE}",
+        )
 
     def _show_empty_hint(self):
         hint = ttk.Label(

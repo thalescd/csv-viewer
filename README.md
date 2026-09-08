@@ -1,5 +1,7 @@
 # CSV Viewer
 
+[![Tests](https://github.com/thalescd/csv-viewer/actions/workflows/tests.yml/badge.svg)](https://github.com/thalescd/csv-viewer/actions/workflows/tests.yml)
+
 A lightweight, dependency-free CSV/TSV viewer built with Python's Tkinter.
 
 No pandas, no Electron, no browser engine -- just the standard library, a

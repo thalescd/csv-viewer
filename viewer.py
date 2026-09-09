@@ -16,6 +16,7 @@ import contextlib
 import csv
 import io
 import json
+import math
 import os
 import queue
 import re
@@ -253,6 +254,29 @@ def send_paths_to_running_instance(paths, host=SINGLE_INSTANCE_HOST,
             return s.recv(len(INSTANCE_ACK)) == INSTANCE_ACK
     except OSError:
         return False
+
+
+def cell_sort_key(value):
+    """Ordering key for a cell value: finite numbers first, then text.
+
+    The isfinite() check is the whole point. float("NaN") and float("inf")
+    both parse, so without it they landed in the numeric branch -- and NaN
+    compares false against everything, itself included, which left sort() in
+    an order that depended on where the NaN happened to sit in the input.
+    Nothing signalled that the column had come out wrong. NaN is a routine
+    literal in pandas and BI exports.
+
+    Non-finite values fall through to the text branch, where they order
+    stably next to the other unparseable cells.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        pass
+    else:
+        if math.isfinite(number):
+            return (0, number, "")
+    return (1, 0.0, str(value).lower())
 
 
 def sniff_delimiter(sample_text, fallback_from_ext=None):
@@ -1069,14 +1093,7 @@ class CSVTab(ttk.Frame):
         ascending = self.sort_state.get(col_id, True)
         items = [(self.tree.set(iid, col_id), iid) for iid in self.tree.get_children("")]
 
-        def sort_key(pair):
-            value = pair[0]
-            try:
-                return (0, float(value))
-            except ValueError:
-                return (1, value.lower())
-
-        items.sort(key=sort_key, reverse=not ascending)
+        items.sort(key=lambda pair: cell_sort_key(pair[0]), reverse=not ascending)
         for index, (_, iid) in enumerate(items):
             self.tree.move(iid, "", index)
         self._restripe()

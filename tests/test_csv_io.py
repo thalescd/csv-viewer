@@ -105,3 +105,55 @@ class TestReadCsvFile:
         assert header == ["name", "city"]
         assert rows == [["Ana", "Brasília"]]
         assert encoding in ("cp1252", "latin-1")
+
+
+class TestQuotedFields:
+    """Quoting rules the csv module knows about but a line-splitter does not."""
+
+    def test_newline_inside_quoted_field_is_preserved(self, tmp_path):
+        p = tmp_path / "multiline.csv"
+        # bytes, not write_text: on Windows write_text would turn every \n into
+        # \r\n and the test would be asserting about the wrong file.
+        p.write_bytes(b'id,note\n1,"line 1\nline 2"\n')
+
+        header, rows, _, _ = viewer.read_csv_file(str(p))
+
+        assert header == ["id", "note"]
+        assert rows == [["1", "line 1\nline 2"]]
+
+    def test_crlf_inside_quoted_field_is_preserved(self, tmp_path):
+        p = tmp_path / "crlf.csv"
+        p.write_bytes(b'id,note\r\n1,"line 1\r\nline 2"\r\n')
+
+        _header, rows, _, _ = viewer.read_csv_file(str(p))
+
+        # one record, and the embedded break survives as a single newline
+        assert len(rows) == 1
+        assert rows[0][1].replace("\r\n", "\n") == "line 1\nline 2"
+
+    def test_delimiter_inside_quoted_field_is_not_a_split(self, tmp_path):
+        p = tmp_path / "embedded_delim.csv"
+        p.write_text('id,city\n1,"Passo Fundo, RS"\n', encoding="utf-8")
+
+        _header, rows, _, _ = viewer.read_csv_file(str(p), delimiter=",")
+
+        assert rows == [["1", "Passo Fundo, RS"]]
+
+    def test_escaped_double_quotes_are_unescaped(self, tmp_path):
+        p = tmp_path / "escaped.csv"
+        p.write_text('id,note\n1,"say ""hi"" now"\n', encoding="utf-8")
+
+        _header, rows, _, _ = viewer.read_csv_file(str(p), delimiter=",")
+
+        assert rows == [["1", 'say "hi" now']]
+
+    # str.splitlines() breaks on these code points; the CSV format does not.
+    @pytest.mark.parametrize("code", [0x0B, 0x0C, 0x85, 0x2028, 0x2029])
+    def test_unicode_line_boundaries_do_not_split_records(self, tmp_path, code):
+        char = chr(code)
+        p = tmp_path / "boundaries.csv"
+        p.write_bytes(f"id,note\n1,before{char}after\n".encode())
+
+        _header, rows, _, _ = viewer.read_csv_file(str(p), delimiter=",")
+
+        assert rows == [["1", f"before{char}after"]]

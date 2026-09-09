@@ -13,6 +13,7 @@ Optional: tkinterdnd2 (drag-and-drop) -- pip install tkinterdnd2
 """
 import contextlib
 import csv
+import io
 import json
 import os
 import queue
@@ -286,7 +287,14 @@ def read_csv_file(path, delimiter=None):
         sample = text[:4096]
         delimiter = sniff_delimiter(sample, fallback_from_ext=default_by_ext)
 
-    reader = csv.reader(text.splitlines(), delimiter=delimiter)
+    # Feed the reader a file-like object, not text.splitlines(). splitlines() is
+    # blind to quoting -- it breaks *inside* a quoted field, and csv.reader then
+    # rejoins the parts without restoring the newline, so the cell silently shows
+    # a value the file never contained. It also splits on \x0b, \x0c, \x85 and
+    # U+2028/U+2029, which are not line boundaries in CSV. StringIO with
+    # newline="" splits on \n, \r and \r\n only, and leaves them untranslated,
+    # which is what the csv docs ask for.
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
     rows = list(reader)
     if not rows:
         return [], [], delimiter, used_encoding

@@ -1207,6 +1207,21 @@ class CSVTab(ttk.Frame):
         self.tree["displaycolumns"] = cols
 
 
+def close_notebook_tab(notebook, tab_id):
+    """Remove a tab from the notebook and free it.
+
+    forget() only unmaps the widget, and that leaks twice over: the tab's
+    `rows` list stays referenced for as long as the process lives, and
+    _reposition_separators keeps rescheduling itself every 400 ms forever,
+    once per closed tab, because its own guard is winfo_exists(). destroy()
+    is what ends both.
+    """
+    with contextlib.suppress(tk.TclError):
+        notebook.forget(tab_id)
+    with contextlib.suppress(tk.TclError, KeyError):
+        notebook.nametowidget(tab_id).destroy()
+
+
 _AppBase = TkinterDnD.Tk if HAS_DND else tk.Tk
 
 
@@ -1558,7 +1573,7 @@ class CSVViewerApp(_AppBase):
         # remove the empty-hint tab, if it's the only one
         tabs = self.notebook.tabs()
         if len(tabs) == 1 and self.notebook.tab(tabs[0], "text") == "(empty)":
-            self.notebook.forget(tabs[0])
+            close_notebook_tab(self.notebook, tabs[0])
 
         tab = CSVTab(
             self.notebook, filepath=path, on_drop_files=self._open_dropped,
@@ -1584,7 +1599,7 @@ class CSVViewerApp(_AppBase):
             return
         current = self.notebook.select()
         if current:
-            self.notebook.forget(current)
+            close_notebook_tab(self.notebook, current)
         if not self.notebook.tabs():
             self._show_empty_hint()
 
@@ -1602,7 +1617,7 @@ class CSVViewerApp(_AppBase):
         tab_id = tabs[idx]
         if not isinstance(self.nametowidget(tab_id), CSVTab):
             return  # don't close the "(empty)" hint tab
-        self.notebook.forget(tab_id)
+        close_notebook_tab(self.notebook, tab_id)
         if not self.notebook.tabs():
             self._show_empty_hint()
 

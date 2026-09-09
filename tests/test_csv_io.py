@@ -157,3 +157,61 @@ class TestQuotedFields:
         _header, rows, _, _ = viewer.read_csv_file(str(p), delimiter=",")
 
         assert rows == [["1", f"before{char}after"]]
+
+
+class TestEncodingDetection:
+    """BOM-carrying files, which the cp1252/latin-1 chain silently mis-decodes."""
+
+    def test_utf8_bom_is_stripped(self, tmp_path):
+        p = tmp_path / "utf8bom.csv"
+        p.write_bytes("name,city\nAna,Passo Fundo\n".encode("utf-8-sig"))
+
+        header, rows, _, encoding = viewer.read_csv_file(str(p))
+
+        assert header == ["name", "city"]
+        assert rows == [["Ana", "Passo Fundo"]]
+        assert encoding == "utf-8-sig"
+
+    def test_utf16_le_with_bom(self, tmp_path):
+        # what PowerShell 5.1 `Out-File` / `>` and Excel "Unicode Text" produce
+        p = tmp_path / "utf16le.csv"
+        p.write_bytes(b"\xff\xfe" + "name,city\nAna,Passo Fundo\n".encode("utf-16-le"))
+
+        header, rows, _, encoding = viewer.read_csv_file(str(p))
+
+        assert header == ["name", "city"]
+        assert rows == [["Ana", "Passo Fundo"]]
+        assert encoding.startswith("utf-16")
+
+    def test_utf16_be_with_bom(self, tmp_path):
+        p = tmp_path / "utf16be.csv"
+        p.write_bytes(b"\xfe\xff" + "name,city\nAna,Passo Fundo\n".encode("utf-16-be"))
+
+        header, rows, _, encoding = viewer.read_csv_file(str(p))
+
+        assert header == ["name", "city"]
+        assert rows == [["Ana", "Passo Fundo"]]
+        assert encoding.startswith("utf-16")
+
+    def test_utf16_tab_separated_keeps_tab_delimiter(self, tmp_path):
+        p = tmp_path / "utf16.tsv"
+        p.write_bytes("name\tcity\nAna\tPasso Fundo\n".encode("utf-16"))
+
+        header, rows, delimiter, _ = viewer.read_csv_file(str(p))
+
+        assert delimiter == "\t"
+        assert header == ["name", "city"]
+        assert rows == [["Ana", "Passo Fundo"]]
+
+    def test_bomless_utf16_is_refused_with_a_readable_message(self, tmp_path):
+        # no BOM to key on: we cannot decode it, but the dialog must not show
+        # the raw `_csv.Error: line contains NUL`.
+        p = tmp_path / "bomless.csv"
+        p.write_bytes("name,city\nAna,Passo Fundo\n".encode("utf-16-le"))
+
+        with pytest.raises(OSError) as excinfo:
+            viewer.read_csv_file(str(p))
+
+        message = str(excinfo.value)
+        assert "utf-16" in message.lower()
+        assert "NUL" not in message

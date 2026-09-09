@@ -11,6 +11,7 @@ Lightweight CSV/TSV viewer.
 Dependencies: none beyond the Python stdlib.
 Optional: tkinterdnd2 (drag-and-drop) -- pip install tkinterdnd2
 """
+import codecs
 import contextlib
 import csv
 import io
@@ -263,13 +264,43 @@ def sniff_delimiter(sample_text, fallback_from_ext=None):
         return fallback_from_ext or ","
 
 
+# Byte-order marks, longest first: BOM_UTF32_LE starts with the two bytes of
+# BOM_UTF16_LE, so checking UTF-16 first would mis-read every UTF-32 LE file.
+BOM_ENCODINGS = [
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+]
+
+
+def detect_bom_encoding(path):
+    """Return the encoding named by the file's byte-order mark, or None."""
+    with open(path, "rb") as f:
+        prefix = f.read(4)
+    for bom, enc in BOM_ENCODINGS:
+        if prefix.startswith(bom):
+            return enc
+    return None
+
+
 def read_csv_file(path, delimiter=None):
     """Reads the whole file and returns (header, rows, delimiter_used, encoding_used)."""
     ext = os.path.splitext(path)[1].lower()
     default_by_ext = "\t" if ext == ".tsv" else ","
 
-    # try utf-8-sig (handles BOM), fall back to latin-1 on error
+    # The BOM is consulted *before* the fallback chain, because latin-1 never
+    # raises UnicodeDecodeError: every byte sequence "decodes" under it, so a
+    # UTF-16 file used to sail through the chain and only blow up later inside
+    # the parser, as a raw `_csv.Error: line contains NUL` in the dialog. This
+    # is routine on Windows -- PowerShell 5.1 `Out-File` and `>` write UTF-16LE
+    # by default, and Excel offers "Unicode Text".
     encodings_to_try = ["utf-8-sig", "cp1252", "latin-1"]
+    bom_encoding = detect_bom_encoding(path)
+    if bom_encoding:
+        encodings_to_try = [bom_encoding] + [e for e in encodings_to_try if e != bom_encoding]
+
     text = None
     used_encoding = None
     for enc in encodings_to_try:
@@ -282,6 +313,17 @@ def read_csv_file(path, delimiter=None):
             continue
     if text is None:
         raise OSError(f"Could not decode file: {path}")
+
+    # Nulls after a successful decode mean we guessed wrong -- almost always a
+    # BOM-less UTF-16/UTF-32 file that latin-1 happily turned into gibberish.
+    # Say so, instead of letting the parser's own wording reach the user.
+    if "\x00" in text:
+        raise OSError(
+            f"Could not read {os.path.basename(path)}: it decoded as {used_encoding} "
+            "but contains null characters, which means it is most likely UTF-16 or "
+            "UTF-32 saved without a byte-order mark. Re-save it as UTF-8, or as "
+            "UTF-16 with a byte-order mark, and open it again."
+        )
 
     if delimiter is None:
         sample = text[:4096]

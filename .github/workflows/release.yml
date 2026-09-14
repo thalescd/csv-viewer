@@ -14,6 +14,8 @@ jobs:
     runs-on: windows-latest   # a Windows .exe has to be built on Windows
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the release notes need the tag message and history
 
       - uses: actions/setup-python@v5
         with:
@@ -76,6 +78,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "$ASSET" \
-            --title "CSV Viewer $GITHUB_REF_NAME" \
-            --generate-notes
+          # GitHub's generated notes list merged pull requests, and everything
+          # here is pushed straight to main, so they come out empty. The
+          # annotated tag's own message is what actually describes the release.
+          body="$(git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)')"
+          previous="$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          if [ -n "$previous" ]; then
+            compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$previous...$GITHUB_REF_NAME"
+            body="$body
+
+          **Full Changelog**: $compare"
+          fi
+
+          if [ -n "$(echo "$body" | tr -d '[:space:]')" ]; then
+            gh release create "$GITHUB_REF_NAME" "$ASSET" \
+              --title "CSV Viewer $GITHUB_REF_NAME" --notes "$body"
+          else
+            # lightweight tag with no message: fall back to whatever GitHub can infer
+            gh release create "$GITHUB_REF_NAME" "$ASSET" \
+              --title "CSV Viewer $GITHUB_REF_NAME" --generate-notes
+          fi

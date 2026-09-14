@@ -14,6 +14,10 @@ single script, and a UI that stays fast and simple even on very large files.
 - **Reorder columns** -- drag a header left/right.
 - **Resize columns** -- drag the border between headers, or double-click it
   to auto-fit the column to its widest content.
+- **Fit columns to window** (*View* menu) -- sizes every column to its content
+  and shares out the spare width, so a file fills the window instead of
+  sitting at a fixed default. Columns you resize by hand are left alone from
+  then on, and files too wide to fit fall back to horizontal scrolling.
 - **Switch delimiter on the fly** -- presets (`,` `;` Tab `|`) or a custom
   one, with auto-detection by default.
 - **Zebra striping** and **thin column separators** for readability.

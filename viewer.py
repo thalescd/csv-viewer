@@ -90,9 +90,18 @@ def open_link(value):
         value = "http://" + value
     webbrowser.open(value)
 
-# when double-clicking to auto-fit column width, only look at up to
-# this many rows (performance safeguard for huge files)
-AUTOSIZE_SAMPLE_LIMIT = 5000
+# when measuring how wide a column's content is, only look at up to this many
+# rows. Fitting every column at once multiplies this by the column count, so
+# it has to stay modest; the trade-off is that an unusually wide value further
+# down a huge file may not be accounted for.
+AUTOSIZE_SAMPLE_LIMIT = 2000
+
+# column sizing: breathing room added to the measured text, and the ceiling a
+# fitted column may reach. The ceiling matters because fitting also raises the
+# column's minwidth -- without it, one long free-text column would become
+# impossible to shrink.
+COLUMN_PADDING = 24
+AUTOFIT_MAX_WIDTH = 400
 
 # how many rows to check to decide whether a column "has links" (sampling only)
 LINK_DETECT_SAMPLE_LIMIT = 2000
@@ -130,6 +139,17 @@ def header_match_columns(header, query):
     """Indexes of the columns whose name contains `query` (case-insensitive)."""
     q = query.lower()
     return [i for i, name in enumerate(header) if q in str(name).lower()]
+
+
+def fitted_column_width(text_widths, padding=COLUMN_PADDING,
+                        minimum=MIN_COLUMN_WIDTH, maximum=AUTOFIT_MAX_WIDTH):
+    """Width for a column whose rendered texts measure `text_widths` pixels.
+
+    Pure policy, kept apart from the measuring so it can be tested without a
+    font: widest text plus padding, held between the floor and the ceiling.
+    """
+    widest = max(text_widths) if text_widths else 0
+    return max(minimum, min(widest + padding, maximum))
 
 
 def same_file_key(path):
@@ -397,9 +417,15 @@ def read_csv_file(path, delimiter=None):
 class CSVTab(ttk.Frame):
     def __init__(self, master, filepath=None, on_drop_files=None,
                  zoom_label_var=None, on_zoom_delta=None, on_zoom_reset=None,
-                 get_palette=None, dark_mode_var=None, on_theme_toggle=None):
+                 get_palette=None, dark_mode_var=None, on_theme_toggle=None,
+                 fit_columns=False):
         super().__init__(master)
         self.get_palette = get_palette or (lambda: PALETTES["light"])
+        self.fit_columns = fit_columns
+        self._content_widths = {}  # col_id -> measured content width, cached per load
+        self._pinned_cols = set()  # columns the user sized by hand; fitting leaves them alone
+        self._resize_col = None
+        self._resize_start_width = 0
         self.dark_mode_var = dark_mode_var
         self.on_theme_toggle = on_theme_toggle
         self.filepath = filepath
@@ -956,6 +982,9 @@ class CSVTab(ttk.Frame):
         self._search_matches = []
         self._search_index = -1
         self._update_search_status()
+        # these columns are new, so nothing measured or pinned before applies
+        self._content_widths = {}
+        self._pinned_cols = set()
 
         for cid, name in zip(cols, self.header):
             self.tree.heading(cid, text=name)
@@ -968,6 +997,9 @@ class CSVTab(ttk.Frame):
             self._rows_by_iid[self.tree.insert("", tk.END, values=row)] = row
 
         self._restripe()
+        if self.fit_columns and self.header:
+            self._measure_content_widths()
+            self._apply_column_fit()
         if not self._sep_loop_started:
             self._sep_loop_started = True
             self._reposition_separators()  # start the repositioning loop
@@ -1154,13 +1186,30 @@ class CSVTab(ttk.Frame):
             self._drag_start_x = event.x
         else:
             self._drag_col = None
+        if region == "separator":
+            # a resize is starting: remember the column and its width so the
+            # release can tell whether the user actually changed it
+            self._resize_col = self._column_at_border(event.x)
+            if self._resize_col:
+                self._resize_start_width = self.tree.column(self._resize_col, "width")
         if region == "cell":
             self._select_cell(event.x, event.y)
 
     def _on_heading_drag(self, event):
         pass  # optional visual feedback; kept simple
 
+    def _finish_manual_resize(self):
+        """Pins a column the user just resized, so fitting stops touching it."""
+        if not self._resize_col:
+            return
+        col_id, start = self._resize_col, self._resize_start_width
+        self._resize_col = None
+        if self.tree.column(col_id, "width") != start:
+            self._pinned_cols.add(col_id)
+            self.tree.column(col_id, minwidth=MIN_COLUMN_WIDTH, stretch=False)
+
     def _on_heading_release(self, event):
+        self._finish_manual_resize()
         if self._drag_col is None:
             return
         moved = abs(event.x - self._drag_start_x) > 15
@@ -1226,29 +1275,73 @@ class CSVTab(ttk.Frame):
                 return cid
         return None
 
-    def _autosize_column(self, col_id):
-        """Resizes the column to fit its widest content (like double-clicking in Sheets/Excel).
-        Measures with the real header/body font (bold, current zoom, etc.),
-        not a fixed default font -- otherwise the header might not fit properly."""
-        try:
-            idx = int(col_id[1:])
-        except ValueError:
-            return
-        if idx >= len(self.header):
-            return
+    # ---------- column sizing ----------
+    def _measure_content_widths(self):
+        """Measures every column's content once and caches the result.
 
+        Measuring uses the real header/body fonts (bold heading, current zoom),
+        not a fixed default, or the header would not fit its own column. The
+        cache is what keeps window resizing free: the widths only change when
+        the data or the font does.
+        """
         style = ttk.Style(self)
         body_font = tkfont.Font(font=style.lookup("Treeview", "font") or "TkDefaultFont")
         heading_font = tkfont.Font(font=style.lookup("Treeview.Heading", "font") or "TkDefaultFont")
 
-        max_width = heading_font.measure(str(self.header[idx]))
         sample = self.rows[:AUTOSIZE_SAMPLE_LIMIT]
-        for row in sample:
-            w = body_font.measure(str(row[idx]))
-            if w > max_width:
-                max_width = w
+        self._content_widths = {}
+        for idx, name in enumerate(self.header):
+            widths = [heading_font.measure(str(name))]
+            widths.extend(body_font.measure(str(row[idx])) for row in sample)
+            self._content_widths[f"c{idx}"] = fitted_column_width(widths)
 
-        self.tree.column(col_id, width=max_width + 24)  # a bit of breathing room
+    def _apply_column_fit(self):
+        """Applies the current sizing mode to every column.
+
+        With fitting on, a column is given its content width as both width and
+        minwidth and is marked stretchable, which hands the rest to Tk: spare
+        room is shared out, and when there is none the columns stop at their
+        content width and the horizontal scrollbar takes over. Columns the user
+        sized by hand are left stretchable=False so nothing moves them again.
+        """
+        for cid in self.tree["columns"]:
+            if self.fit_columns and cid not in self._pinned_cols:
+                width = self._content_widths.get(cid, MIN_COLUMN_WIDTH)
+                self.tree.column(cid, width=width, minwidth=width, stretch=True)
+            else:
+                # frozen: keep whatever width it has now, just stop adjusting it
+                self.tree.column(cid, minwidth=MIN_COLUMN_WIDTH, stretch=False)
+
+    def set_fit_columns(self, enabled):
+        """Turns fitting on or off (called by the App, since the setting is global)."""
+        self.fit_columns = enabled
+        if enabled:
+            # a fresh start: old pins would otherwise linger invisibly
+            self._pinned_cols.clear()
+            if not self._content_widths:
+                self._measure_content_widths()
+        self._apply_column_fit()
+
+    def refresh_column_fit_for_font_change(self):
+        """Re-measures after a zoom change, since the text is a different size now."""
+        if not self.header:
+            return
+        self._measure_content_widths()
+        self._apply_column_fit()
+
+    def _autosize_column(self, col_id):
+        """Resizes one column to fit its content, and pins it.
+
+        Pinning matters when fitting is on: without it, the next window resize
+        would stretch the column again and undo the double-click.
+        """
+        if not self._content_widths:
+            self._measure_content_widths()
+        width = self._content_widths.get(col_id)
+        if width is None:
+            return
+        self._pinned_cols.add(col_id)
+        self.tree.column(col_id, width=width, minwidth=MIN_COLUMN_WIDTH, stretch=False)
 
     def _reorder_columns(self, src_col, target_col):
         cols = self._display_columns()
@@ -1287,6 +1380,7 @@ class CSVViewerApp(_AppBase):
         self._config = load_config()
         self._init_zoom()
         self._init_theme_state()
+        self._init_fit_columns_state()
         self._init_recent_files()
         self._build_menu()
         self._apply_theme_style()
@@ -1403,6 +1497,15 @@ class CSVViewerApp(_AppBase):
         self._apply_zoom_style()
         self._config["zoom_pct"] = self.zoom_pct
         save_config(self._config)
+        if self.fit_columns:
+            # the text is a different size now, so the measured widths are stale
+            self._for_each_tab(lambda tab: tab.refresh_column_fit_for_font_change())
+
+    def _for_each_tab(self, action):
+        for tab_id in self.notebook.tabs():
+            tab = self.nametowidget(tab_id)
+            if isinstance(tab, CSVTab):
+                action(tab)
 
     def _apply_zoom_style(self):
         scale = self.zoom_pct / 100
@@ -1425,10 +1528,18 @@ class CSVViewerApp(_AppBase):
         self._apply_theme_style()
         self._config["dark_mode"] = self.dark_mode
         save_config(self._config)
-        for tab_id in self.notebook.tabs():
-            tab = self.nametowidget(tab_id)
-            if isinstance(tab, CSVTab):
-                tab.refresh_theme()
+        self._for_each_tab(lambda tab: tab.refresh_theme())
+
+    # ---------- fit columns to the window ----------
+    def _init_fit_columns_state(self):
+        self.fit_columns = bool(self._config.get("fit_columns", False))
+        self.fit_columns_var = tk.BooleanVar(value=self.fit_columns)
+
+    def toggle_fit_columns(self):
+        self.fit_columns = self.fit_columns_var.get()
+        self._config["fit_columns"] = self.fit_columns
+        save_config(self._config)
+        self._for_each_tab(lambda tab: tab.set_fit_columns(self.fit_columns))
 
     def _apply_theme_style(self):
         if self.dark_mode:
@@ -1559,6 +1670,10 @@ class CSVViewerApp(_AppBase):
         view_menu.add_command(label="Reset Zoom (100%)", command=self.reset_zoom)
         view_menu.add_separator()
         view_menu.add_checkbutton(
+            label="Fit Columns to Window", variable=self.fit_columns_var,
+            command=self.toggle_fit_columns,
+        )
+        view_menu.add_checkbutton(
             label="Dark Mode", variable=self.dark_mode_var, command=self.toggle_theme
         )
         menubar.add_cascade(label="View", menu=view_menu)
@@ -1633,6 +1748,7 @@ class CSVViewerApp(_AppBase):
             on_zoom_delta=self.change_zoom, on_zoom_reset=self.reset_zoom,
             get_palette=self.get_palette,
             dark_mode_var=self.dark_mode_var, on_theme_toggle=self.toggle_theme,
+            fit_columns=self.fit_columns,
         )
         self.notebook.add(tab, text=os.path.basename(path))
         self.notebook.select(tab)

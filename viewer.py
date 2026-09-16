@@ -126,13 +126,40 @@ PAN_MAX_SPEED_UNITS = 24   # maximum scroll speed per tick
 PAN_TICK_MS = 40           # scroll loop interval
 
 # persisted config file (zoom, theme, recent files, etc.)
-CONFIG_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "CSVViewer")
+def _config_dir():
+    """Where the settings file lives, following each platform's convention.
+
+    %APPDATA% on Windows; elsewhere the XDG location, so the file does not
+    land as a bare "CSVViewer" folder in the middle of the user's home.
+    """
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return os.path.join(appdata, "CSVViewer")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "CSVViewer")
+
+
+CONFIG_DIR = _config_dir()
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 
 # Search results are (row, column) pairs. Column names live above the rows
 # rather than in one, so a header hit uses this in place of a row id.
 HEADER_ROW = "#header"
+
+
+def wheel_direction(num, delta):
+    """+1 for a scroll up, -1 for down, from either shape of wheel event.
+
+    Windows and macOS deliver <MouseWheel> with a signed `delta` and no button
+    number. X11 has no such event at all: it reports the wheel as presses of
+    button 4 (up) and 5 (down), where `delta` is always 0.
+    """
+    if num == 4:
+        return 1
+    if num == 5:
+        return -1
+    return 1 if delta > 0 else -1
 
 
 def header_match_columns(header, query):
@@ -232,6 +259,13 @@ class SingleInstanceServer:
         self.queue = queue.Queue()
         self._closed = False
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # Without this, Linux refuses to re-bind the port while a connection
+        # from the previous run is still in TIME_WAIT -- so quitting and
+        # reopening within a minute of a handoff would silently lose the
+        # single-instance behaviour. It does not let a second process hold the
+        # port at the same time, so the "whoever binds is the main instance"
+        # claim below still holds.
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self._sock.bind((host, port))
             self._sock.listen(8)
@@ -256,8 +290,16 @@ class SingleInstanceServer:
 
     def close(self):
         self._closed = True
+        # It takes both calls to let go of the port. On Linux, closing a socket
+        # another thread is parked in accept() on does not wake that thread,
+        # and the port stays bound until it does -- shutdown() is what wakes
+        # it. On Windows it is the other way round: shutdown() on a listening
+        # socket fails, and close() is what aborts the accept.
+        with contextlib.suppress(OSError):
+            self._sock.shutdown(socket.SHUT_RDWR)
         with contextlib.suppress(OSError):
             self._sock.close()
+        self._thread.join(timeout=1.0)
 
 
 def send_paths_to_running_instance(paths, host=SINGLE_INSTANCE_HOST,
@@ -573,6 +615,9 @@ class CSVTab(ttk.Frame):
         self.tree.bind("<Double-Button-1>", self._on_heading_double_click)
         # ctrl+scroll also controls zoom, in addition to the buttons in the status bar
         self.tree.bind("<Control-MouseWheel>", self._on_ctrl_mousewheel)
+        # ...and the same thing again for X11, which sends wheel buttons instead
+        self.tree.bind("<Control-Button-4>", self._on_ctrl_mousewheel)
+        self.tree.bind("<Control-Button-5>", self._on_ctrl_mousewheel)
         # copy selected cell
         self.tree.bind("<Control-c>", self._copy_selected_cell)
         self.tree.bind("<Button-3>", self._on_right_click)
@@ -725,7 +770,7 @@ class CSVTab(ttk.Frame):
 
     def _on_ctrl_mousewheel(self, event):
         if self.on_zoom_delta:
-            self.on_zoom_delta(10 if event.delta > 0 else -10)
+            self.on_zoom_delta(10 * wheel_direction(event.num, event.delta))
 
     # ---------- "pan" mode (hold the middle button, browser/PDF-reader style) ----------
     def _start_pan(self, event):
@@ -1461,12 +1506,21 @@ class CSVViewerApp(_AppBase):
             self.focus_force()
 
     def _set_window_icon(self):
-        """Uses the bundled .ico when available (Windows); silently keeps the
-        default Tk icon elsewhere or if the file is missing."""
-        icon = resource_path("assets", "icon.ico")
-        if os.path.isfile(icon):
+        """Uses the bundled .ico on Windows and the .png everywhere else --
+        iconbitmap() only understands .ico there, and on X11 it wants an XBM,
+        so handing it the .ico silently leaves the default Tk icon in place.
+        Still silent if neither file made it into the build."""
+        ico = resource_path("assets", "icon.ico")
+        if os.name == "nt" and os.path.isfile(ico):
             with contextlib.suppress(tk.TclError):
-                self.iconbitmap(icon)
+                self.iconbitmap(ico)
+                return
+        png = resource_path("assets", "icon.png")
+        if os.path.isfile(png):
+            with contextlib.suppress(tk.TclError):
+                # held on the instance because Tk keeps only a weak hold on it
+                self._icon_image = tk.PhotoImage(file=png)
+                self.iconphoto(True, self._icon_image)
 
     # ---------- zoom (affects font/row height for all tabs) ----------
     def _init_zoom(self):
@@ -1517,6 +1571,10 @@ class CSVViewerApp(_AppBase):
     # ---------- light/dark theme ----------
     def _init_theme_state(self):
         self._native_theme = self.style.theme_use()  # so we can switch back to light (native)
+        # Read before anything is themed, so light mode can put back whatever
+        # this platform started with. The "SystemButtonFace" family of color
+        # names only exists on Windows -- on X11 Tk rejects them outright.
+        self._native_bg = self.cget("bg")
         self.dark_mode = bool(self._config.get("dark_mode", False))
         self.dark_mode_var = tk.BooleanVar(value=self.dark_mode)
 
@@ -1570,11 +1628,8 @@ class CSVViewerApp(_AppBase):
             }
         else:
             self.style.theme_use(self._native_theme)
-            self.configure(bg="SystemButtonFace")
-            menu_colors = {
-                "bg": "SystemMenu", "fg": "SystemMenuText",
-                "activebackground": "SystemHighlight", "activeforeground": "SystemHighlightText",
-            }
+            self.configure(bg=self._native_bg)
+            menu_colors = dict(self._native_menu_colors)
 
         self._menu_colors = menu_colors
         menus = (self._menubar, self._file_menu, self._view_menu,
@@ -1683,6 +1738,11 @@ class CSVViewerApp(_AppBase):
         menubar.add_cascade(label="Help", menu=help_menu)
 
         self.config(menu=menubar)
+        # captured untouched, for the same reason as _native_bg above
+        self._native_menu_colors = {
+            opt: str(menubar.cget(opt))  # cget hands back Tcl objects, not str
+            for opt in ("bg", "fg", "activebackground", "activeforeground")
+        }
         self._menubar = menubar
         self._file_menu = file_menu
         self._view_menu = view_menu

@@ -108,3 +108,20 @@ class TestHandoff:
         """The port is the lock: only one instance can hold it."""
         with pytest.raises(OSError):
             viewer.SingleInstanceServer(host=HOST, port=server.port)
+
+
+class TestRebinding:
+    """Quitting and reopening must not lose the single-instance behaviour."""
+
+    def test_port_can_be_rebound_right_after_a_handoff(self):
+        srv = viewer.SingleInstanceServer(host=HOST, port=0)
+        port = srv.port
+        assert viewer.send_paths_to_running_instance(["/tmp/a.csv"], host=HOST, port=port)
+        srv.close()
+        # the handoff leaves the connection in TIME_WAIT; binding again anyway
+        # is what SO_REUSEADDR buys us
+        again = viewer.SingleInstanceServer(host=HOST, port=port)
+        try:
+            assert again.port == port
+        finally:
+            again.close()

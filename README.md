@@ -70,8 +70,9 @@ a loopback socket (`127.0.0.1:49731`), which doubles as the lock deciding
 which process is the main one.
 
 Settings (zoom, dark mode, recent files) are stored in
-`%APPDATA%\CSVViewer\config.json` on Windows (or `~/CSVViewer/config.json`
-elsewhere).
+`%APPDATA%\CSVViewer\config.json` on Windows, and
+`$XDG_CONFIG_HOME/CSVViewer/config.json` (usually
+`~/.config/CSVViewer/config.json`) elsewhere.
 
 ## Download
 

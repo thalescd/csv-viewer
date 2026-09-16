@@ -23,7 +23,9 @@ datas = [
     (src, dest) for src, dest in collect_data_files("tkinterdnd2")
     if "tkdnd" not in dest or os.path.basename(dest).startswith(TKDND_OS)
 ]
-datas += [("assets/icon.ico", "assets")]
+# the .ico is the Windows window/exe icon; the .png is what Tk can use for
+# the window icon on Linux (see _set_window_icon)
+datas += [("assets/icon.ico", "assets"), ("assets/icon.png", "assets")]
 
 # Nothing here talks to the network beyond a loopback socket, but PyInstaller
 # still drags in OpenSSL (libcrypto + libssl, ~4 MB) because it follows every

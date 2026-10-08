@@ -3,6 +3,8 @@
 These need a display. On a headless runner without Xvfb they skip rather
 than fail, like the other Tk tests here.
 """
+import os
+
 import pytest
 
 import viewer
@@ -242,3 +244,57 @@ class TestHugeFileOnDisk:
 
         assert size_asked == []  # no size to ask about
         assert len(errors) == 1  # the usual error dialog instead
+
+
+class TestRecentMenu:
+    """A click in "Open Recent" and Ctrl+1..9 must treat a missing file alike."""
+
+    def test_clicking_a_file_that_still_exists_opens_it(self, app, tmp_path):
+        path = good_file(tmp_path)
+        app.open_file(path)
+        for tab in csv_tabs(app):
+            viewer.close_notebook_tab(app.notebook, str(tab))
+
+        app._recent_menu.invoke(0)
+
+        assert [t.filepath for t in csv_tabs(app)] == [path]
+
+    def test_clicking_a_missing_file_reports_it_and_drops_it_from_the_list(self, app, tmp_path, errors):
+        path = good_file(tmp_path)
+        app.open_file(path)
+        os.remove(path)
+
+        app._recent_menu.invoke(0)
+
+        assert len(errors) == 1
+        assert app.recent_files == []
+
+    def test_the_menu_shows_the_list_without_the_dropped_file(self, app, tmp_path, errors):
+        gone, kept = good_file(tmp_path, "gone.csv"), good_file(tmp_path, "kept.csv")
+        app.open_file(gone)
+        app.open_file(kept)  # most recent first: kept, gone
+        os.remove(gone)
+
+        app._recent_menu.invoke(1)  # the entry for gone.csv
+
+        assert app._recent_menu.entrycget(0, "label") == "1. kept.csv"
+        assert app._recent_menu.index("end") == 0  # only one entry left
+
+    def test_the_menu_and_the_shortcut_agree(self, app, tmp_path, errors):
+        path = good_file(tmp_path)
+        app.open_file(path)
+        os.remove(path)
+
+        app._open_recent(0)  # what Ctrl+1 does
+
+        assert len(errors) == 1
+        assert app.recent_files == []
+
+    def test_a_second_click_on_the_dropped_entry_cannot_happen(self, app, tmp_path, errors):
+        path = good_file(tmp_path)
+        app.open_file(path)
+        os.remove(path)
+        app._recent_menu.invoke(0)
+
+        assert app._recent_menu.entrycget(0, "label") == "(empty)"
+        assert str(app._recent_menu.entrycget(0, "state")) == "disabled"

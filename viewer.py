@@ -2140,7 +2140,7 @@ class CSVViewerApp(_AppBase):
                 shortcut = f"Ctrl+{i + 1}" if i < 9 else "Ctrl+0"
                 label = f"{i + 1}. {os.path.basename(path)}"
                 self._recent_menu.add_command(
-                    label=label, accelerator=shortcut, command=lambda p=path: self.open_file(p)
+                    label=label, accelerator=shortcut, command=lambda i=i: self._open_recent(i)
                 )
         menu_colors = getattr(self, "_menu_colors", None)
         if menu_colors:

@@ -266,10 +266,15 @@ class SingleInstanceServer:
         # Without this, Linux refuses to re-bind the port while a connection
         # from the previous run is still in TIME_WAIT -- so quitting and
         # reopening within a minute of a handoff would silently lose the
-        # single-instance behaviour. It does not let a second process hold the
-        # port at the same time, so the "whoever binds is the main instance"
-        # claim below still holds.
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # single-instance behaviour. On Linux it does not let a second process
+        # hold the port at the same time, so the "whoever binds is the main
+        # instance" claim below still holds.
+        # Not on Windows: there the same option DOES let a second process bind
+        # a port that is already in use, so every launch would "win" the lock
+        # and open its own window. Windows refuses a second bind by default,
+        # and has no TIME_WAIT problem of this kind to work around.
+        if os.name != "nt":
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self._sock.bind((host, port))
             self._sock.listen(8)

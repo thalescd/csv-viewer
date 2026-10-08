@@ -23,6 +23,12 @@ single script, and a UI that stays fast and simple even on very large files.
 - **Zebra striping** and **thin column separators** for readability.
 - **Copy a cell** -- click to select, `Ctrl+C` to copy, or right-click →
   *Copy cell*.
+- **Copy a whole column or row** -- right-click a header for *Copy column*
+  (optionally with the column name on top), or right-click any cell for
+  *Copy column* / *Copy row*. `Ctrl+Shift+C` copies the selected cell's
+  column. The copy follows what is on screen: the current sort order and the
+  current column order, not the order in the file. Values containing a line
+  break or a tab are quoted, so they still paste as a single cell.
 - **Clickable links** -- cells that look like a URL are underlined; hold
   `Ctrl` and click to open in the browser.
 - **Find (`Ctrl+F`)** -- searches column names as well as cell values, so
@@ -149,6 +155,9 @@ up alongside the app.
 | `Ctrl+W` | Close current tab |
 | `Ctrl+F` | Find in current tab |
 | `Ctrl+C` | Copy selected cell |
+| `Ctrl+Shift+C` | Copy the selected cell's whole column |
+| Right-click a header | Column menu (copy column / with header / name) |
+| Right-click a cell | Cell menu (copy cell / column / row) |
 | `Ctrl+click` (cell) | Open link |
 | `Ctrl +` / `Ctrl -` / `Ctrl 0` | Zoom in / out / reset |
 | `Ctrl+scroll` | Zoom in / out |

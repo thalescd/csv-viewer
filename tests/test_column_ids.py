@@ -1,4 +1,5 @@
-"""Tests for turning a clicked column into a data column.
+"""Tests for turning a clicked column into a data column, and for the copies
+built on top of it.
 
 A click reports a column as "#n": a 1-based position on screen, which a drag
 may have reordered. The rows are indexed by the column's own position in the
@@ -94,6 +95,42 @@ class TestSortByClickedColumn:
         assert [r[0] for r in shown_rows(tab)] == ["zeca", "bia", "ana"]
 
 
+class TestCopyColumn:
+    def test_the_values_of_the_clicked_column(self, tab):
+        tab._copy_column("#2")
+        assert tab.clipboard_get() == "10\n30\n20"
+
+    def test_with_header_puts_the_name_on_top(self, tab):
+        tab._copy_column("#2", with_header=True)
+        assert tab.clipboard_get() == "idade\n10\n30\n20"
+
+    def test_it_follows_the_order_on_screen_not_the_file(self, tab):
+        tab._sort_by("#2")  # sort by idade
+        tab._copy_column("#1")
+        assert tab.clipboard_get() == "zeca\nbia\nana"
+
+    def test_the_status_bar_names_the_column_and_counts_the_values(self, tab):
+        tab._copy_column("#3")
+        assert tab._flash_var.get() == 'Copied 3 values from "cidade"'
+
+    def test_copying_the_column_name_alone(self, tab):
+        tab._copy_column_name("#3")
+        assert tab.clipboard_get() == "cidade"
+
+
+class TestCopyRow:
+    def test_the_fields_are_tab_separated_in_display_order(self, tab):
+        first = tab.tree.get_children("")[0]
+        tab._copy_row(first)
+        assert tab.clipboard_get() == "zeca\t10\tporto"
+
+    def test_it_follows_a_column_that_was_dragged(self, tab):
+        tab._reorder_columns("c0", "c2")  # nome moves to the end
+        first = tab.tree.get_children("")[0]
+        tab._copy_row(first)
+        assert tab.clipboard_get() == "10\tporto\tzeca"
+
+
 class TestSelectionDrivenCopies:
     def test_a_clicked_cell_is_remembered_by_name_not_by_position(self, tab, monkeypatch):
         first = tab.tree.get_children("")[0]
@@ -106,3 +143,25 @@ class TestSelectionDrivenCopies:
 
         # "#2" would go stale the moment a column is dragged elsewhere
         assert tab._selected_cell == (first, "c1")
+
+    def test_ctrl_shift_c_copies_the_selected_cells_column(self, tab):
+        first = tab.tree.get_children("")[0]
+        tab._selected_cell = (first, "c1")
+        tab._copy_selected_column()
+        assert tab.clipboard_get() == "10\n30\n20"
+
+    def test_copying_the_row_of_the_selected_cell(self, tab):
+        second = tab.tree.get_children("")[1]
+        tab._selected_cell = (second, "c1")
+        tab._copy_selected_row()
+        assert tab.clipboard_get() == "ana\t30\tbage"
+
+    def test_a_header_selection_has_no_row_to_copy(self, tab):
+        tab._selected_cell = (viewer.HEADER_ROW, "c1")
+        tab._copy_selected_row()  # must not raise, and must not copy a row
+        assert tab._flash_var.get() == ""
+
+    def test_copying_a_header_selection_gives_the_column_name(self, tab):
+        tab._selected_cell = (viewer.HEADER_ROW, "c1")
+        tab._copy_selected_cell()
+        assert tab.clipboard_get() == "idade"

@@ -3,6 +3,7 @@ Lightweight CSV/TSV viewer.
 
 - Multiple tabs (one per open file)
 - Sort by column (click the header)
+- Copy a cell, a whole column or a whole row (right-click)
 - Reorder columns (drag the header)
 - Quickly switch delimiter per tab
 - Open files passed via command line (for Windows file association)
@@ -109,6 +110,9 @@ LINK_DETECT_SAMPLE_LIMIT = 2000
 # delay before a header click actually triggers a sort -- gives time
 # to detect whether it turns into a double-click (e.g. trying to resize the border)
 SORT_CLICK_DELAY_MS = 300
+
+# how long the outline around a column stays up after it is copied
+COLUMN_FLASH_MS = 450
 
 # table zoom limits (in %)
 ZOOM_MIN = 50
@@ -339,6 +343,38 @@ def cells_containing(rows, query, ncols):
     return matches
 
 
+# a field holding one of these would spill into the wrong cell once pasted
+# into a spreadsheet, so a multi-value copy quotes it the way CSV does
+CLIPBOARD_QUOTE_TRIGGERS = ('"', "\n", "\r", "\t")
+
+
+def clipboard_field(value):
+    """One field of a multi-value copy, quoted only when it has to be.
+
+    A single cell goes to the clipboard raw -- the user asked for that value,
+    not for a CSV record. It is only when several values share the clipboard
+    that a line break or tab inside one of them has to stop reading as
+    "next row" and "next column".
+    """
+    text = "" if value is None else str(value)
+    if any(ch in text for ch in CLIPBOARD_QUOTE_TRIGGERS):
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
+
+def clipboard_column(values, header=None):
+    """A column as one value per line, with its name on top when given."""
+    lines = [clipboard_field(v) for v in values]
+    if header is not None:
+        lines.insert(0, clipboard_field(header))
+    return "\n".join(lines)
+
+
+def clipboard_row(values):
+    """A row as tab-separated fields, so it pastes across spreadsheet cells."""
+    return "\t".join(clipboard_field(v) for v in values)
+
+
 def cell_sort_key(value):
     """Ordering key for a cell value: finite numbers first, then text.
 
@@ -486,6 +522,8 @@ class CSVTab(ttk.Frame):
         self.on_zoom_reset = on_zoom_reset
         self._selected_cell = None  # (row_iid, col_id) of the clicked cell, for copying
         self._cell_highlight_frames = []  # 4 thin borders around the selected cell
+        self._column_flash_frames = []  # same idea, outlining a whole column after a copy
+        self._column_flash_after_id = None
         self._link_col_idxs = set()  # indices of columns that contain links
         self._link_labels = []  # pool of blue/underlined Labels overlaid on link cells
         self._pan_active = False
@@ -618,8 +656,9 @@ class CSVTab(ttk.Frame):
         # ...and the same thing again for X11, which sends wheel buttons instead
         self.tree.bind("<Control-Button-4>", self._on_ctrl_mousewheel)
         self.tree.bind("<Control-Button-5>", self._on_ctrl_mousewheel)
-        # copy selected cell
+        # copy the selected cell, or its whole column with shift
         self.tree.bind("<Control-c>", self._copy_selected_cell)
+        self.tree.bind("<Control-Shift-C>", self._copy_selected_column)
         self.tree.bind("<Button-3>", self._on_right_click)
         # links: ctrl+click opens in the browser; hand cursor on hover
         self.tree.bind("<Control-Button-1>", self._on_ctrl_click)
@@ -746,13 +785,47 @@ class CSVTab(ttk.Frame):
         left.place(x=x, y=y, width=thickness, height=h)
         right.place(x=x + w - thickness, y=y, width=thickness, height=h)
 
+    def _flash_column(self, col_id):
+        """Outlines a whole column for a moment: the copy's visual receipt.
+
+        The status bar says what was copied, but the outline is what says
+        *which* column it came from -- by then the click that opened the menu
+        is gone, and a wrong column is exactly the mistake worth catching
+        before pasting somewhere else.
+        """
+        rect = self._cell_rect(HEADER_ROW, col_id)
+        if rect is None:
+            return  # nothing drawn yet (empty file, or the tab is hidden)
+        x, _y, w, _h = rect
+        height = self.tree.winfo_height()
+        color = self.get_palette()["cell_highlight"]
+        self._hide_column_flash()
+        while len(self._column_flash_frames) < 4:
+            self._column_flash_frames.append(tk.Frame(self.tree, bg=color))
+        top, bottom, left, right = self._column_flash_frames
+        for f in (top, bottom, left, right):
+            f.configure(bg=color)
+        thickness = 2
+        top.place(x=x, y=0, width=w, height=thickness)
+        bottom.place(x=x, y=height - thickness, width=w, height=thickness)
+        left.place(x=x, y=0, width=thickness, height=height)
+        right.place(x=x + w - thickness, y=0, width=thickness, height=height)
+        self._column_flash_after_id = self.after(COLUMN_FLASH_MS, self._hide_column_flash)
+
+    def _hide_column_flash(self):
+        if self._column_flash_after_id is not None:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._column_flash_after_id)
+            self._column_flash_after_id = None
+        for f in self._column_flash_frames:
+            f.place_forget()
+
     def _copy_selected_cell(self, event=None):
         if not self._selected_cell:
             return
         row, col = self._selected_cell
-        if row == HEADER_ROW:  # a search landed on a column name
-            idx = self._column_index(col)
-            value = str(self.header[idx]) if idx is not None and idx < len(self.header) else ""
+        if row == HEADER_ROW:  # a search, or a right-click, landed on a column name
+            value = self._column_name(col)
         elif self.tree.exists(row):
             value = self.tree.set(row, col)
         else:
@@ -763,6 +836,71 @@ class CSVTab(ttk.Frame):
         self._flash_status(f"Copied: {preview}")
         return "break"
 
+    def _set_clipboard(self, text, message):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._flash_status(message)
+
+    def _column_name(self, col_id):
+        idx = self._column_index(col_id)
+        if idx is None or idx >= len(self.header):
+            return ""
+        return str(self.header[idx])
+
+    def _column_values(self, col_id):
+        """A column's values, in the order the rows are on screen right now.
+
+        Sorting moves the items inside the widget, so walking get_children()
+        is what makes the copy match what the user is looking at instead of
+        the order the file happened to have.
+        """
+        idx = self._column_index(col_id)
+        if idx is None:
+            return []
+        values = []
+        for iid in self.tree.get_children(""):
+            row = self._rows_by_iid.get(iid)
+            values.append(row[idx] if row is not None and idx < len(row) else "")
+        return values
+
+    def _copy_column(self, col_id, with_header=False):
+        name = self._column_name(col_id)
+        values = self._column_values(col_id)
+        if not values and not name:
+            return
+        text = clipboard_column(values, header=name if with_header else None)
+        self._set_clipboard(text, f'Copied {len(values)} values from "{name}"')
+        self._flash_column(col_id)
+
+    def _copy_column_name(self, col_id):
+        name = self._column_name(col_id)
+        if not name:
+            return
+        self._set_clipboard(name, f"Copied: {name}")
+
+    def _copy_row(self, row_iid):
+        row = self._rows_by_iid.get(row_iid)
+        if row is None:
+            return
+        # follow the columns as they are shown, which a drag may have reordered
+        values = []
+        for cid in self._display_columns():
+            idx = int(cid[1:])
+            values.append(row[idx] if idx < len(row) else "")
+        self._set_clipboard(clipboard_row(values), f"Copied row ({len(values)} columns)")
+
+    def _copy_selected_column(self, event=None):
+        if not self._selected_cell:
+            return
+        self._copy_column(self._selected_cell[1])
+        return "break"
+
+    def _copy_selected_row(self, event=None):
+        if not self._selected_cell or self._selected_cell[0] == HEADER_ROW:
+            return
+        self._copy_row(self._selected_cell[0])
+        return "break"
+
     def _flash_status(self, text, ms=1800):
         """Shows a temporary message in the status bar (e.g. copy confirmation)."""
         if self._flash_after_id is not None:
@@ -771,14 +909,7 @@ class CSVTab(ttk.Frame):
         self._flash_var.set(text)
         self._flash_after_id = self.after(ms, lambda: self._flash_var.set(""))
 
-    def _on_right_click(self, event):
-        if self._pan_active:
-            self._stop_pan()
-            return
-        region = self.tree.identify_region(event.x, event.y)
-        if region != "cell":
-            return
-        self._select_cell(event.x, event.y)
+    def _make_menu(self):
         menu = tk.Menu(self, tearoff=0)
         palette = self.get_palette()
         if "menu_bg" in palette:  # only dark mode defines these keys
@@ -786,7 +917,50 @@ class CSVTab(ttk.Frame):
                 bg=palette["menu_bg"], fg=palette["menu_fg"],
                 activebackground=palette["menu_active_bg"], activeforeground=palette["menu_active_fg"],
             )
+        return menu
+
+    def _on_right_click(self, event):
+        if self._pan_active:
+            self._stop_pan()
+            return
+        region = self.tree.identify_region(event.x, event.y)
+        # the border between two headers still counts as the header: hitting a
+        # 4px separator by accident should not be the difference between the
+        # menu and nothing at all
+        if region == "heading" or (region == "separator" and event.y <= self._header_height()):
+            self._show_header_menu(event)
+            return
+        if region != "cell":
+            return
+        self._select_cell(event.x, event.y)
+        if not self._selected_cell:
+            return
+        menu = self._make_menu()
         menu.add_command(label="Copy cell", command=self._copy_selected_cell)
+        menu.add_command(label="Copy column", command=self._copy_selected_column)
+        menu.add_command(label="Copy row", command=self._copy_selected_row)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _show_header_menu(self, event):
+        """Right-click on a header: the column actions.
+
+        Left-click there already sorts, and that gesture is worth keeping --
+        so the whole-column copies live on the button that had nothing bound
+        to it over the header.
+        """
+        col_id = self._data_column(self.tree.identify_column(event.x))
+        if col_id is None:
+            return
+        # selecting the header outlines it the same way a search hit does, so
+        # the menu is visibly attached to one column
+        self._selected_cell = (HEADER_ROW, col_id)
+        self._update_cell_highlight()
+        menu = self._make_menu()
+        menu.add_command(label="Copy column", command=lambda: self._copy_column(col_id))
+        menu.add_command(label="Copy column with header",
+                         command=lambda: self._copy_column(col_id, with_header=True))
+        menu.add_separator()
+        menu.add_command(label="Copy column name", command=lambda: self._copy_column_name(col_id))
         menu.tk_popup(event.x_root, event.y_root)
 
     def _on_ctrl_mousewheel(self, event):
@@ -1041,6 +1215,7 @@ class CSVTab(ttk.Frame):
         # old iids stop existing after reloading -> clear the selection
         self._selected_cell = None
         self._hide_cell_highlight()
+        self._hide_column_flash()
         self._link_col_idxs = self._detect_link_columns()
         self._hide_link_labels()
         self._cancel_pending_sort()

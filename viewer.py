@@ -1107,11 +1107,14 @@ class CSVTab(ttk.Frame):
 
     # ---------- loading ----------
     def load(self, filepath, delimiter=None):
+        """Reads `filepath` into the tab. True when the file is now showing,
+        False when it could not be read (the error was already reported and
+        the tab is left as it was)."""
         try:
             header, rows, used_delim, used_enc = read_csv_file(filepath, delimiter=delimiter)
         except Exception as exc:
             messagebox.showerror("Error opening file", str(exc))
-            return
+            return False
 
         self.filepath = filepath
         self.header = header
@@ -1125,6 +1128,7 @@ class CSVTab(ttk.Frame):
             f"{os.path.basename(filepath)}  |  {n_rows} rows x {len(header)} columns  "
             f"|  delimiter: {used_delim!r}  |  encoding: {used_enc}{warn}"
         )
+        return True
 
     def reload(self):
         if self.filepath:
@@ -2038,30 +2042,38 @@ class CSVViewerApp(_AppBase):
         if not os.path.isfile(path):
             messagebox.showerror("File not found", path)
             return
-        self._add_recent(path)
 
         # already open: focus that tab instead of stacking a duplicate. The
         # content is left as it is -- re-opening a file should not silently
         # throw away the sorting and column layout; "Reload" does that on purpose.
         already_open = self._find_open_tab(path)
         if already_open is not None:
+            self._add_recent(path)
             self.notebook.select(already_open)
             already_open._flash_status("Already open")
             return
 
-        # remove the empty-hint tab, if it's the only one
-        tabs = self.notebook.tabs()
-        if len(tabs) == 1 and self.notebook.tab(tabs[0], "text") == "(empty)":
-            close_notebook_tab(self.notebook, tabs[0])
-
         tab = CSVTab(
-            self.notebook, filepath=path, on_drop_files=self._open_dropped,
+            self.notebook, on_drop_files=self._open_dropped,
             zoom_label_var=self.zoom_label_var,
             on_zoom_delta=self.change_zoom, on_zoom_reset=self.reset_zoom,
             get_palette=self.get_palette,
             dark_mode_var=self.dark_mode_var, on_theme_toggle=self.toggle_theme,
             fit_columns=self.fit_columns,
         )
+        # Load before touching the notebook or the recent list: a file that
+        # cannot be read used to leave behind a blank tab named after it, and
+        # an entry in "Open Recent" that fails the same way every time.
+        if not tab.load(path):
+            tab.destroy()
+            return
+        self._add_recent(path)
+
+        # remove the empty-hint tab, if it's the only one
+        tabs = self.notebook.tabs()
+        if len(tabs) == 1 and self.notebook.tab(tabs[0], "text") == "(empty)":
+            close_notebook_tab(self.notebook, tabs[0])
+
         self.notebook.add(tab, text=os.path.basename(path))
         self.notebook.select(tab)
 

@@ -155,3 +155,90 @@ class TestLargeFile:
         app.open_file(undecodable_file(tmp_path))
 
         assert str(app.cget("cursor")) == ""
+
+
+class TestHugeFileOnDisk:
+    """The size on disk is checked before reading: the row count comes too late."""
+
+    @pytest.fixture
+    def size_asked(self, monkeypatch):
+        class Asked(list):
+            answer = True
+
+        log = Asked()
+
+        def fake(title, message, **_kw):
+            log.append(message)
+            return log.answer
+
+        monkeypatch.setattr(viewer.messagebox, "askyesno", fake)
+        monkeypatch.setattr(viewer, "MAX_FILE_BYTES_WARN", 5)  # bytes: the test files are 8+, so "huge"
+        return log
+
+    @pytest.fixture
+    def never_read(self, monkeypatch):
+        def boom(*_a, **_k):
+            raise AssertionError("the file was read although the user said no")
+
+        monkeypatch.setattr(viewer, "read_csv_file", boom)
+
+    def test_a_file_under_the_limit_opens_without_a_question(self, app, tmp_path, size_asked, monkeypatch):
+        monkeypatch.setattr(viewer, "MAX_FILE_BYTES_WARN", 10_000)
+
+        app.open_file(good_file(tmp_path))
+
+        assert size_asked == []
+        assert len(csv_tabs(app)) == 1
+
+    def test_a_file_over_the_limit_asks_with_its_size_and_a_memory_estimate(self, app, tmp_path, size_asked):
+        app.open_file(good_file(tmp_path))
+
+        assert len(size_asked) == 1
+        assert "ok.csv is 0 MB" in size_asked[0]
+        assert "GB of memory" in size_asked[0]
+
+    def test_saying_no_does_not_read_the_file_at_all(self, app, tmp_path, size_asked, never_read):
+        size_asked.answer = False
+
+        app.open_file(good_file(tmp_path))
+
+        assert csv_tabs(app) == []
+        assert app.recent_files == []
+        assert [app.notebook.tab(t, "text") for t in app.notebook.tabs()] == ["(empty)"]
+
+    def test_saying_yes_opens_it_and_notes_it_is_large(self, app, tmp_path, size_asked):
+        app.open_file(good_file(tmp_path))
+
+        (tab,) = csv_tabs(app)
+        assert len(tab.rows) == 1
+        assert "large file" in tab.status_var.get()
+
+    def test_saying_yes_to_the_size_does_not_ask_again_about_the_rows(self, app, tmp_path, size_asked, monkeypatch):
+        monkeypatch.setattr(viewer, "MAX_ROWS_WARN", 2)
+
+        app.open_file(big_file(tmp_path, rows=5))
+
+        assert len(size_asked) == 1  # one question, not one for the size and one for the rows
+        assert len(csv_tabs(app)) == 1
+
+    def test_saying_no_to_a_reload_keeps_what_was_showing(self, app, tmp_path, size_asked, monkeypatch):
+        monkeypatch.setattr(viewer, "MAX_FILE_BYTES_WARN", 10_000)
+        path = good_file(tmp_path)
+        app.open_file(path)
+        (tab,) = csv_tabs(app)
+        status = tab.status_var.get()
+        monkeypatch.setattr(viewer, "MAX_FILE_BYTES_WARN", 5)
+        size_asked.answer = False
+
+        tab.reload()
+
+        assert len(tab.rows) == 1
+        assert tab.status_var.get() == status
+
+    def test_a_path_that_cannot_be_measured_is_left_to_the_normal_error(self, app, tmp_path, size_asked, errors):
+        tab = viewer.CSVTab(app.notebook)
+
+        assert tab.load(str(tmp_path / "missing.csv")) is False
+
+        assert size_asked == []  # no size to ask about
+        assert len(errors) == 1  # the usual error dialog instead

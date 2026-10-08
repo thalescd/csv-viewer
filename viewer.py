@@ -46,6 +46,14 @@ DELIMITER_PRESETS = [(",", ","), (";", ";"), ("Tab", "\t"), ("|", "|")]
 # row-count limit, just a basic memory/UI safeguard
 MAX_ROWS_WARN = 200_000
 
+# Reading a file holds its text, then every parsed row, and the peak is far
+# larger than the file: measured at about 12 times its size (a 16 MB file peaked
+# at 193 MB), before the table copies the rows again. So the file's size on
+# disk is checked before it is read -- the row count only exists afterwards,
+# when the memory is already spent. 100 MB is roughly 1.2 GB of peak.
+MAX_FILE_BYTES_WARN = 100 * 1024 * 1024
+READ_PEAK_TO_FILE_SIZE = 12  # for the estimate shown to the user, not a guarantee
+
 # color palettes (light/dark) -- covers both the "hand-drawn" elements
 # (zebra striping, separator lines, cell highlight, links) and the ttk style
 PALETTES = {
@@ -1200,6 +1208,27 @@ class CSVTab(ttk.Frame):
         error was already reported, and the tab is left as it was)."""
         name = os.path.basename(filepath)
         previous_status = self.status_var.get()
+
+        # Ask about a big file before reading it. If it is confirmed here, the
+        # question about its rows further down is not asked a second time.
+        confirmed_large = False
+        try:
+            size = os.path.getsize(filepath)
+        except OSError:
+            size = 0  # let the read below report whatever is wrong with the path
+        if size > MAX_FILE_BYTES_WARN:
+            megabytes = size / (1024 * 1024)
+            gigabytes = size * READ_PEAK_TO_FILE_SIZE / (1024 ** 3)
+            if not messagebox.askyesno(
+                "Large file",
+                f"{name} is {megabytes:,.0f} MB.\n\nReading it needs roughly "
+                f"{gigabytes:.1f} GB of memory, and the window will not respond "
+                "while it loads.\n\nOpen it anyway?",
+                default=messagebox.NO,
+            ):
+                return False
+            confirmed_large = True
+
         self.status_var.set(f"Loading {name}...")
         try:
             with self._busy():
@@ -1215,7 +1244,7 @@ class CSVTab(ttk.Frame):
         # than mentioning it in the status bar afterwards.
         n_rows = len(rows)
         large = n_rows > MAX_ROWS_WARN
-        if large and not messagebox.askyesno(
+        if large and not confirmed_large and not messagebox.askyesno(
             "Large file",
             f"{name} has {n_rows:,} rows.\n\nShowing that many can freeze the window "
             "for several seconds and use a lot of memory.\n\nOpen it anyway?",
@@ -1231,7 +1260,7 @@ class CSVTab(ttk.Frame):
         with self._busy():
             self._populate_tree()
 
-        warn = "  (large file, may be slow)" if large else ""
+        warn = "  (large file, may be slow)" if large or confirmed_large else ""
         self.status_var.set(
             f"{name}  |  {n_rows} rows x {len(header)} columns  "
             f"|  delimiter: {used_delim!r}  |  encoding: {used_enc}{warn}"

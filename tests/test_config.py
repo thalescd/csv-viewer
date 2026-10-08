@@ -22,6 +22,32 @@ class TestLoadConfig:
 
         assert viewer.load_config() == {}
 
+    def test_a_config_that_is_not_an_object_returns_empty_dict(self, monkeypatch, tmp_path):
+        # valid JSON, but the app reads it with .get(): a list or a bare number
+        # used to be returned as is, and then crashed the app at startup
+        config_dir, config_file = _point_config_at(monkeypatch, tmp_path)
+        config_dir.mkdir(parents=True)
+
+        for text in ("[]", "[1, 2]", "42", '"text"', "null", "true"):
+            config_file.write_text(text, encoding="utf-8")
+            assert viewer.load_config() == {}, text
+
+    def test_a_config_with_invalid_bytes_returns_empty_dict(self, monkeypatch, tmp_path):
+        # not UTF-8 at all (a half-written or foreign file): UnicodeDecodeError
+        # is not a JSONDecodeError, so it used to escape and stop the app
+        config_dir, config_file = _point_config_at(monkeypatch, tmp_path)
+        config_dir.mkdir(parents=True)
+        config_file.write_bytes(b'{"zoom_pct": \xff\xfe}')
+
+        assert viewer.load_config() == {}
+
+    def test_an_empty_config_file_returns_empty_dict(self, monkeypatch, tmp_path):
+        config_dir, config_file = _point_config_at(monkeypatch, tmp_path)
+        config_dir.mkdir(parents=True)
+        config_file.write_text("", encoding="utf-8")
+
+        assert viewer.load_config() == {}
+
 
 class TestSaveConfig:
     def test_round_trip(self, monkeypatch, tmp_path):

@@ -213,11 +213,20 @@ def resource_path(*parts):
 
 
 def load_config():
+    """The saved settings, or {} when there are none worth using.
+
+    Anything unusable counts as "none", and the app starts with its defaults:
+    a missing or unreadable file, JSON that does not parse, bytes that are not
+    UTF-8 (ValueError covers both of those), or valid JSON that is not an
+    object -- the app calls .get() on the result, so a list would stop it from
+    starting, on every launch, until the file was deleted by hand.
+    """
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
+            config = json.load(f)
+    except (OSError, ValueError):
         return {}
+    return config if isinstance(config, dict) else {}
 
 
 def save_config(config):

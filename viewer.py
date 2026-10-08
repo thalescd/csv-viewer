@@ -1303,6 +1303,23 @@ class CSVTab(ttk.Frame):
         ]
         return matches
 
+    def _resync_search_order(self):
+        """Puts the results back in screen order after the rows were reordered.
+
+        The results are kept as a list and "next" walks down it, so after a sort
+        it would still follow the old order and jump around the table. The user
+        stays on the result they were looking at: only its position in the list
+        changes, not the selection.
+        """
+        if not self._search_matches:
+            return
+        current = None
+        if 0 <= self._search_index < len(self._search_matches):
+            current = self._search_matches[self._search_index]
+        self._search_matches = self._compute_matches(self._search_var.get())
+        self._search_index = self._search_matches.index(current) if current in self._search_matches else -1
+        self._update_search_status()
+
     def _search_step(self, direction):
         if not self._search_matches:
             self._update_search_status()
@@ -1570,6 +1587,7 @@ class CSVTab(ttk.Frame):
         # 200,000 would take minutes, with the window frozen for all of it.
         self.tree.set_children("", *[iid for _, iid in items])
         self._restripe()
+        self._resync_search_order()
 
         self.sort_state[col_name] = not ascending
         # update the header text with a direction indicator

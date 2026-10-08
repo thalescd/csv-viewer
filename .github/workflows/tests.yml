@@ -34,5 +34,26 @@ jobs:
       - name: Syntax check
         run: python -m py_compile viewer.py
 
+      # The window tests (sorting, redraw, opening files, links...) need a screen
+      # and skip themselves without one. A Linux runner has none, so the tests
+      # run inside Xvfb, a virtual screen. The runner image already has it; the
+      # install is only a safety net for when ubuntu-latest moves to a new image.
+      - name: Make sure a virtual screen is available
+        if: runner.os == 'Linux'
+        run: command -v xvfb-run || sudo apt-get install -y xvfb
+
+      - name: Run tests (Linux, on a virtual screen)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a pytest -v -rs 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          # skipping for lack of a screen is what this step exists to prevent
+          if grep -q "no display available" pytest.log; then
+            echo "::error::window tests were skipped: no display, so the virtual screen is not working"
+            exit 1
+          fi
+          exit $status
+
       - name: Run tests
+        if: runner.os != 'Linux'
         run: pytest -v

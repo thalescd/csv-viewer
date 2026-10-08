@@ -195,3 +195,49 @@ class TestMessageFraming:
 
         assert viewer.send_paths_to_running_instance(["ok.csv"], host=HOST, port=server.port)
         assert _wait_for_queue(server) == ["ok.csv"]
+
+
+class TestUserPort:
+    """Each user meets their own instance on their own port."""
+
+    def test_the_same_user_always_gets_the_same_port(self):
+        assert viewer.user_port("alice") == viewer.user_port("alice")
+
+    def test_different_users_get_different_ports(self):
+        names = ["alice", "bob", "carol", "joao.silva", "maria.souza", "thales"]
+
+        assert len({viewer.user_port(n) for n in names}) == len(names)
+
+    def test_the_port_is_in_the_unregistered_range(self):
+        for name in ["", "alice", "COOP\\joao", "ação", "x" * 500]:
+            assert 49152 <= viewer.user_port(name) <= 65151
+
+    def test_the_default_is_the_current_users_port(self, monkeypatch):
+        monkeypatch.setattr(viewer.getpass, "getuser", lambda: "alice")
+
+        assert viewer.user_port() == viewer.user_port("alice")
+
+    @pytest.mark.parametrize("error", [KeyError("LOGNAME"), OSError("no such user"), ImportError("pwd")])
+    def test_an_unknown_user_still_gets_a_working_port(self, monkeypatch, error):
+        def boom():
+            raise error
+
+        monkeypatch.setattr(viewer.getpass, "getuser", boom)
+
+        assert viewer.user_port() == viewer.user_port("")
+
+    def test_the_module_default_is_this_users_port(self):
+        assert viewer.user_port() == viewer.SINGLE_INSTANCE_PORT
+
+    def test_two_users_do_not_hand_files_to_each_other(self):
+        # alice's instance is running; bob's launch looks on bob's port, finds
+        # nothing, and so opens a window of his own instead of using alice's
+        alice = viewer.SingleInstanceServer(host=HOST, port=viewer.user_port("alice"))
+        try:
+            bobs_port = viewer.user_port("bob")
+            delivered = viewer.send_paths_to_running_instance(["bob.csv"], host=HOST, port=bobs_port)
+
+            assert delivered is False
+            assert alice.queue.empty()
+        finally:
+            alice.close()

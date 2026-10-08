@@ -72,8 +72,9 @@ python viewer.py data.csv --new-window   # force a separate window
 
 If the viewer is already running, these commands hand the files to it and
 exit, so everything ends up as tabs in one window. That handoff happens over
-a loopback socket (`127.0.0.1:49731`), which doubles as the lock deciding
-which process is the main one.
+a loopback socket (`127.0.0.1`, on a port worked out from your user name, so
+two people on the same machine do not end up in each other's window), which
+doubles as the lock deciding which process is the main one.
 
 Settings (zoom, dark mode, recent files) are stored in
 `%APPDATA%\CSVViewer\config.json` on Windows, and

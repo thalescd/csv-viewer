@@ -15,6 +15,7 @@ Optional: tkinterdnd2 (drag-and-drop) -- pip install tkinterdnd2
 import codecs
 import contextlib
 import csv
+import getpass
 import io
 import json
 import math
@@ -28,6 +29,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
+import zlib
 from tkinter import filedialog, messagebox, ttk
 
 try:
@@ -253,7 +255,30 @@ def save_config(config):
 # socket; later ones hand their file list over and exit, so files pile up as
 # tabs in the window that is already open (Notepad++ style).
 SINGLE_INSTANCE_HOST = "127.0.0.1"
-SINGLE_INSTANCE_PORT = 49731
+
+
+def user_port(user=None):
+    """The loopback port this user's instances meet on.
+
+    A loopback port belongs to the whole machine, not to one person. With one
+    fixed port, a second person on the same machine (a terminal server, fast
+    user switching, a shared Linux box) would have their files handed to the
+    first person's window, and open there, on someone else's screen. Each user
+    gets a port of their own, picked from the name. Two names can land on the
+    same port (about 1 in 16,000 per pair); that only brings back the old
+    behaviour for those two, it does not break anything.
+
+    Stays in the 49152-65151 range that no service is registered in.
+    """
+    if user is None:
+        try:
+            user = getpass.getuser()
+        except Exception:  # which error it is varies with platform and version
+            user = ""
+    return 49152 + zlib.crc32(user.encode("utf-8")) % 16000
+
+
+SINGLE_INSTANCE_PORT = user_port()
 # The handshake reply. Any local process can grab our port, so the sender only
 # trusts a listener that answers with this exact token -- otherwise it assumes
 # the port belongs to something else and opens its own window instead.

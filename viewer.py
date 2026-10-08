@@ -734,14 +734,22 @@ class CSVTab(ttk.Frame):
 
         `bbox` only answers for rendered rows, so anything needing pixel
         coordinates (separator lines, highlights, column borders) has to
-        measure from one of these.
+        measure from one of these. The row is found by asking the widget what
+        sits just under the header, not by searching a slice of the children:
+        once the user scrolled past that slice, none of its rows were on screen
+        and every one of those features quietly stopped working.
+
+        identify_row() alone is not enough: right at the edge of the header it
+        names the row that is hidden underneath, which has no bbox. So the
+        answer must also be a row that is really drawn.
         """
-        cols = self._display_columns()
-        if not cols:
+        if not self._display_columns():
             return None
-        for iid in self.tree.get_children("")[:200]:
-            if self.tree.bbox(iid, cols[0]):
-                return iid
+        for y in range(1, 100):
+            if self.tree.identify_region(5, y) == "cell":
+                iid = self.tree.identify_row(y)
+                if iid and self.tree.bbox(iid):
+                    return iid
         return None
 
     def _hide_cell_highlight(self):
@@ -1496,9 +1504,9 @@ class CSVTab(ttk.Frame):
 
     def _header_height(self):
         """Header height in pixels (where the first data row starts)."""
-        children = self.tree.get_children("")
-        if children:
-            bbox = self.tree.bbox(children[0])
+        item = self._first_visible_item()
+        if item:
+            bbox = self.tree.bbox(item)
             if bbox:
                 return bbox[1]
         return 26  # no rows yet -- reasonable estimate

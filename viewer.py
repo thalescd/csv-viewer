@@ -1664,11 +1664,17 @@ class CSVTab(ttk.Frame):
         self._apply_column_fit()
 
     def refresh_column_fit_for_font_change(self):
-        """Re-measures after a zoom change, since the text is a different size now."""
-        if not self.header:
-            return
-        self._measure_content_widths()
-        self._apply_column_fit()
+        """Forgets the measured widths after a zoom change, since the text is a
+        different size now.
+
+        The cache is dropped even when fitting is off: a double-click on a border
+        or switching fitting on later would otherwise reuse widths measured at
+        the old size and cut the text off. It is measured again when next needed.
+        """
+        self._content_widths = {}
+        if self.fit_columns and self.header:
+            self._measure_content_widths()
+            self._apply_column_fit()
 
     def _autosize_column(self, col_id):
         """Resizes one column to fit its content, and pins it.
@@ -1847,9 +1853,8 @@ class CSVViewerApp(_AppBase):
         self._apply_zoom_style()
         self._config["zoom_pct"] = self.zoom_pct
         save_config(self._config)
-        if self.fit_columns:
-            # the text is a different size now, so the measured widths are stale
-            self._for_each_tab(lambda tab: tab.refresh_column_fit_for_font_change())
+        # the text is a different size now, so the measured widths are stale
+        self._for_each_tab(lambda tab: tab.refresh_column_fit_for_font_change())
 
     def _for_each_tab(self, action):
         for tab_id in self.notebook.tabs():

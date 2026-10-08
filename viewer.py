@@ -1417,11 +1417,13 @@ class CSVTab(ttk.Frame):
 
         # iid -> the row behind it, so search and sort can read the data in
         # memory instead of asking the widget for it cell by cell
+        # The zebra stripe goes in with the row. A separate pass over every row
+        # afterwards (_restripe) cost a quarter of the load time on a big file.
         self._rows_by_iid = {}
-        for row in self.rows:
-            self._rows_by_iid[self.tree.insert("", tk.END, values=row)] = row
+        for position, row in enumerate(self.rows):
+            tag = "evenrow" if position % 2 == 0 else "oddrow"
+            self._rows_by_iid[self.tree.insert("", tk.END, values=row, tags=(tag,))] = row
 
-        self._restripe()
         if self.fit_columns and self.header:
             self._measure_content_widths()
             self._apply_column_fit()

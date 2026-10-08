@@ -1,5 +1,13 @@
 # Dependencies for development (not required to run the app itself).
+#
+# The ones that decide what ships, or whether CI is green, are pinned: a release
+# is built with exactly this PyInstaller, and a newer ruff can start failing the
+# lint with no change in this repo. Bump them on purpose, and check the build.
+#
+# pytest and pillow are not pinned: their newest versions need Python 3.10, and
+# the test job also runs on 3.9. pillow only regenerates assets/icon.ico by hand
+# (assets/make_icon.py); no CI job uses it.
 pytest>=7
-ruff>=0.16
-pyinstaller>=5.9   # building the standalone executable
-pillow>=10         # only needed to regenerate assets/icon.ico
+ruff==0.16.7
+pyinstaller==6.22.3   # building the standalone executable
+pillow>=10            # only needed to regenerate assets/icon.ico

@@ -2062,10 +2062,22 @@ class CSVViewerApp(_AppBase):
             self._show_empty_hint()
 
 
+def parse_args(argv):
+    """Splits the command line into (force_new_window, files).
+
+    The files come back as absolute paths. They may be handed to an instance
+    that is already running, and that one resolves a relative path against its
+    own working directory -- so `viewer.py data.csv` typed in one folder would
+    be looked for in whichever folder the first window was started from.
+    """
+    force_new_window = "--new-window" in argv
+    files = [os.path.abspath(a) for a in argv if not a.startswith("--")]
+    return force_new_window, files
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    force_new_window = "--new-window" in argv
-    files = [a for a in argv if not a.startswith("--")]
+    force_new_window, files = parse_args(argv)
 
     server = None
     if not force_new_window:

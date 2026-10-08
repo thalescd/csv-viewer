@@ -527,6 +527,9 @@ class CSVTab(ttk.Frame):
         self._sep_frames = []  # thin separator lines between columns
         self._pending_sort_after_id = None  # delayed sort so it doesn't fire together with a double-click
         self._sep_loop_started = False
+        self._header_y = None  # pixel row where the data starts under the header, once measured
+        self._link_font_key = None  # what the cached link font was built from
+        self._link_font = None
         self.zoom_label_var = zoom_label_var
         self.on_zoom_delta = on_zoom_delta
         self.on_zoom_reset = on_zoom_reset
@@ -739,28 +742,62 @@ class CSVTab(ttk.Frame):
             cols = list(self.tree["columns"])
         return cols
 
-    def _first_visible_item(self):
-        """The topmost row the widget has actually drawn, or None.
+    def _locate_top(self):
+        """(item, bbox) of the topmost row the widget has drawn, or None.
 
         `bbox` only answers for rendered rows, so anything needing pixel
-        coordinates (separator lines, highlights, column borders) has to
-        measure from one of these. The row is found by asking the widget what
-        sits just under the header, not by searching a slice of the children:
-        once the user scrolled past that slice, none of its rows were on screen
-        and every one of those features quietly stopped working.
+        coordinates (separator lines, highlights, column borders) measures from
+        this one. It is found by asking the widget what sits just under the
+        header, not by searching a slice of the children: once the user scrolled
+        past that slice, none of its rows were on screen and every one of those
+        features quietly stopped working.
 
-        identify_row() alone is not enough: right at the edge of the header it
-        names the row that is hidden underneath, which has no bbox. So the
-        answer must also be a row that is really drawn.
+        Cost matters, because the redraw loop calls this every 150 ms. Tk finds
+        a row from its pixel position by counting the rows above it, so each
+        identify/bbox call is slower the further down the file is scrolled
+        (about 0.3 ms at row 25,000). The header's height is remembered, which
+        leaves two such calls per lookup in the common case instead of a scan.
         """
-        if not self._display_columns():
+        if not self._rows_by_iid or not self._display_columns():
             return None
+        if self._header_y is not None:
+            iid = self.tree.identify_row(self._header_y + 2)
+            bbox = self.tree.bbox(iid) if iid else None
+            if bbox and bbox[1] == self._header_y:
+                return iid, bbox
+        # no remembered height, or it went stale (zoom, theme): measure it again.
+        # identify_row() alone is not enough: right at the edge of the header it
+        # names the row hidden underneath, which has no bbox, so the answer
+        # must also be a row that is really drawn.
         for y in range(1, 100):
             if self.tree.identify_region(5, y) == "cell":
                 iid = self.tree.identify_row(y)
-                if iid and self.tree.bbox(iid):
-                    return iid
+                bbox = self.tree.bbox(iid) if iid else None
+                if bbox:
+                    self._header_y = bbox[1]
+                    return iid, bbox
         return None
+
+    def _first_visible_item(self):
+        """The topmost row the widget has actually drawn, or None."""
+        top = self._locate_top()
+        return top[0] if top else None
+
+    def _column_spans(self, left):
+        """[(column id, x, width)] for the columns as shown, starting at `left`.
+
+        Widths come from the column options and are added up, rather than asking
+        the widget for every column's bbox. The sum matches bbox exactly --
+        scrolled, reordered, stretched -- and costs nothing, where each bbox
+        call is slow in a long file.
+        """
+        spans = []
+        x = left
+        for cid in self._display_columns():
+            width = self.tree.column(cid, "width")
+            spans.append((cid, x, width))
+            x += width
+        return spans
 
     def _hide_cell_highlight(self):
         for f in self._cell_highlight_frames:
@@ -1300,41 +1337,50 @@ class CSVTab(ttk.Frame):
         for lbl in self._link_labels:
             lbl.place_forget()
 
-    def _update_link_overlays(self, cols, visible_item):
-        """Overlays blue/underlined labels exactly on top of the link cells
-        that are currently visible on screen (keeps the cost low even for large files)."""
-        if not self._link_col_idxs or visible_item is None:
-            self._hide_link_labels()
-            return
+    def _link_label_font(self):
+        """The underlined font for link cells, rebuilt only when the table's font changes.
 
-        link_cols = [c for c in cols if int(c[1:]) in self._link_col_idxs]
-        if not link_cols:
+        This runs on every redraw tick, and building a Font plus a Style lookup
+        each time was pure repeated work: the answer only changes with zoom.
+        """
+        font_desc = ttk.Style(self).lookup("Treeview", "font") or "TkDefaultFont"
+        if font_desc != self._link_font_key:
+            base_font = tkfont.Font(font=font_desc)
+            self._link_font = (base_font.actual("family"), base_font.actual("size"), "underline")
+            self._link_font_key = font_desc
+        return self._link_font
+
+    def _update_link_overlays(self, spans, top):
+        """Overlays blue/underlined labels exactly on top of the link cells
+        that are currently visible on screen (keeps the cost low even for large files).
+
+        `spans` is _column_spans() and `top` is _locate_top(). Rows are placed
+        by adding the row height, so no per-cell bbox is needed.
+        """
+        link_spans = [(cid, x, w) for cid, x, w in spans if int(cid[1:]) in self._link_col_idxs]
+        if not link_spans or top is None:
             self._hide_link_labels()
             return
 
         palette = self.get_palette()
-        font_desc = ttk.Style(self).lookup("Treeview", "font") or "TkDefaultFont"
-        base_font = tkfont.Font(font=font_desc)
-        link_font = (base_font.actual("family"), base_font.actual("size"), "underline")
+        link_font = self._link_label_font()
 
+        item, (_x, y, _w, row_h) = top
         tree_h = self.tree.winfo_height()
-        cells = []  # (bbox, value, bg_color)
-        iid = visible_item
+        tree_w = self.tree.winfo_width()
+        # a column scrolled out of view needs no label
+        link_spans = [(cid, x, w) for cid, x, w in link_spans if x + w > 0 and x < tree_w]
+        cells = []  # (x, y, w, h, value, bg_color)
+        iid = item
         seen = 0
-        while iid and seen < 500:
-            row_bbox = self.tree.bbox(iid, cols[0])
-            if not row_bbox:
-                break
-            if row_bbox[1] > tree_h:
-                break
+        while iid and seen < 500 and y <= tree_h:
             tags = self.tree.item(iid, "tags")
             bg = palette["stripe_odd"] if "oddrow" in tags else palette["stripe_even"]
-            for cid in link_cols:
+            for cid, x, w in link_spans:
                 value = self.tree.set(iid, cid)
                 if looks_like_url(value):
-                    bbox = self.tree.bbox(iid, cid)
-                    if bbox:
-                        cells.append((bbox, value, bg))
+                    cells.append((x, y, w, row_h, value, bg))
+            y += row_h
             iid = self.tree.next(iid)
             seen += 1
 
@@ -1344,8 +1390,7 @@ class CSVTab(ttk.Frame):
             lbl.bind("<ButtonPress-1>", self._on_link_label_select)
             self._link_labels.append(lbl)
 
-        for lbl, (bbox, value, bg) in zip(self._link_labels, cells):
-            x, y, w, h = bbox
+        for lbl, (x, y, w, h, value, bg) in zip(self._link_labels, cells):
             lbl.configure(text=value, bg=bg, fg=palette["link_fg"], font=link_font)
             lbl._link_value = value
             lbl.place(x=x, y=y, width=w, height=h)
@@ -1382,18 +1427,12 @@ class CSVTab(ttk.Frame):
                 self.after(400, self._reposition_separators)
             return
 
-        cols = self._display_columns()
-        visible_item = self._first_visible_item()
+        top = self._locate_top()
+        spans = self._column_spans(top[1][0]) if top else []
+        # a line at the right edge of every column but the last
+        boundaries = [x + w for _cid, x, w in spans[:-1]]
 
-        boundaries = []
-        if visible_item is not None and len(cols) > 1:
-            for cid in cols[:-1]:
-                bbox = self.tree.bbox(visible_item, cid)
-                if bbox:
-                    x, _y, w, _h = bbox
-                    boundaries.append(x + w)
-
-        self._update_link_overlays(cols, visible_item)
+        self._update_link_overlays(spans, top)
 
         sep_color = self.get_palette()["separator"]
         total_h = self.tree.winfo_height()
@@ -1514,12 +1553,8 @@ class CSVTab(ttk.Frame):
 
     def _header_height(self):
         """Header height in pixels (where the first data row starts)."""
-        item = self._first_visible_item()
-        if item:
-            bbox = self.tree.bbox(item)
-            if bbox:
-                return bbox[1]
-        return 26  # no rows yet -- reasonable estimate
+        top = self._locate_top()
+        return top[1][1] if top else 26  # no rows yet -- reasonable estimate
 
     def _column_at_border(self, x, tolerance=4):
         """Finds the column whose right border is near x (uses bbox, so it

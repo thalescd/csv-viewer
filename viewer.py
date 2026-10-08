@@ -78,6 +78,15 @@ PALETTES = {
     },
 }
 
+# Mouse events a link label hands on to the table underneath it. A label is a
+# widget of its own, so it receives the events over its cell and, having no
+# bindings for these, did nothing with them: no menu on right-click, no scroll
+# from the wheel, no pan from the middle button.
+LINK_LABEL_FORWARDED_EVENTS = (
+    "<Button-3>", "<ButtonPress-2>", "<ButtonRelease-2>",
+    "<MouseWheel>", "<Button-4>", "<Button-5>",
+)
+
 URL_RE = re.compile(r"^(https?://|www\.)\S+$", re.IGNORECASE)
 
 
@@ -1454,6 +1463,8 @@ class CSVTab(ttk.Frame):
             lbl = tk.Label(self.tree, cursor="hand2", anchor="w", padx=2)
             lbl.bind("<Control-Button-1>", self._on_link_label_click)
             lbl.bind("<ButtonPress-1>", self._on_link_label_select)
+            for sequence in LINK_LABEL_FORWARDED_EVENTS:
+                lbl.bind(sequence, lambda e, seq=sequence: self._forward_to_tree(e, seq))
             self._link_labels.append(lbl)
 
         for lbl, (x, y, w, h, value, bg) in zip(self._link_labels, cells):
@@ -1468,6 +1479,20 @@ class CSVTab(ttk.Frame):
         if value:
             open_link(value)
             self._flash_status(f"Opening link: {value[:60]}")
+
+    def _forward_to_tree(self, event, sequence):
+        """Replays a mouse event that landed on a link label as if it had landed
+        on the table, at the same spot, so every table binding applies to it
+        (the cell menu, wheel scroll, Ctrl+wheel zoom, pan)."""
+        label = event.widget
+        options = {
+            "x": event.x + label.winfo_x(), "y": event.y + label.winfo_y(),
+            "rootx": event.x_root, "rooty": event.y_root, "state": event.state,
+        }
+        if sequence == "<MouseWheel>":
+            options["delta"] = event.delta
+        self.tree.event_generate(sequence, **options)
+        return "break"
 
     def _on_link_label_select(self, event):
         # a plain click (without ctrl) on the link label should still select

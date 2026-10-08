@@ -24,6 +24,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
@@ -249,6 +250,10 @@ SINGLE_INSTANCE_PORT = 49731
 # trusts a listener that answers with this exact token -- otherwise it assumes
 # the port belongs to something else and opens its own window instead.
 INSTANCE_ACK = b"CSVVIEWER-OK\n"
+# A handoff is one line of JSON. The server reads until the line ends, within
+# these limits, so one slow or oversized connection cannot hold up the next.
+MAX_HANDOFF_BYTES = 1_048_576
+HANDOFF_READ_SECONDS = 2.0
 
 
 def encode_paths(paths):
@@ -264,6 +269,29 @@ def decode_paths(data):
     if not isinstance(payload, list):
         return []
     return [p for p in payload if isinstance(p, str)]
+
+
+def read_handoff_message(conn, limit=MAX_HANDOFF_BYTES, seconds=None):
+    """Reads one line from `conn`, or returns None if it never completes.
+
+    The message may arrive in several pieces (a long list of paths is more than
+    one read), so it is read until the newline that ends it. None means it was
+    cut short, too long, or too slow: the caller then does not acknowledge it.
+    An acknowledgement is the sender's cue to exit, so sending one for a
+    half-read message used to lose the files without a trace.
+    """
+    deadline = time.monotonic() + (HANDOFF_READ_SECONDS if seconds is None else seconds)
+    data = b""
+    while b"\n" not in data:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or len(data) > limit:
+            return None
+        conn.settimeout(remaining)
+        chunk = conn.recv(65536)
+        if not chunk:
+            return None  # the sender hung up before finishing
+        data += chunk
+    return data
 
 
 class SingleInstanceServer:
@@ -310,8 +338,9 @@ class SingleInstanceServer:
             except OSError:
                 return  # socket closed, we are shutting down
             with conn, contextlib.suppress(OSError):
-                conn.settimeout(1.0)
-                data = conn.recv(65536)
+                data = read_handoff_message(conn)
+                if data is None:
+                    continue  # incomplete: no acknowledgement, so the sender keeps its files
                 self.queue.put(decode_paths(data))
                 conn.sendall(INSTANCE_ACK)
 

@@ -125,3 +125,73 @@ class TestRebinding:
             assert again.port == port
         finally:
             again.close()
+
+
+def _raw_exchange(port, pieces, pause=0.2, wait_for_reply=True):
+    """Sends `pieces` as separate writes, then returns whatever the server answers."""
+    with socket.create_connection((HOST, port), timeout=3.0) as s:
+        for piece in pieces:
+            s.sendall(piece)
+            time.sleep(pause)
+        if not wait_for_reply:
+            return b""
+        s.settimeout(3.0)
+        try:
+            return s.recv(64)
+        except OSError:
+            return b""
+
+
+class TestMessageFraming:
+    """A handoff is one line of JSON; it may arrive in several pieces."""
+
+    @pytest.fixture(autouse=True)
+    def short_deadline(self, monkeypatch):
+        # the server gives up on a message that never ends; do not wait the full time
+        monkeypatch.setattr(viewer, "HANDOFF_READ_SECONDS", 0.5)
+
+    def test_a_message_split_across_writes_is_read_whole(self, server):
+        payload = viewer.encode_paths(["a.csv", "b.csv"])
+        half = len(payload) // 2
+
+        reply = _raw_exchange(server.port, [payload[:half], payload[half:]])
+
+        assert reply == viewer.INSTANCE_ACK
+        assert _wait_for_queue(server) == ["a.csv", "b.csv"]
+
+    def test_a_long_list_of_paths_is_not_cut_short(self, server):
+        # ~300 KB, well past a single read of 64 KB
+        paths = [f"/data/folder/{i:05d}/{'x' * 80}.csv" for i in range(3000)]
+
+        assert viewer.send_paths_to_running_instance(paths, host=HOST, port=server.port, timeout=5.0)
+        assert _wait_for_queue(server) == paths
+
+    def test_a_message_that_never_ends_is_not_acknowledged(self, server):
+        # half a message and then silence: the sender must not be told its files
+        # were taken, or it exits and they are lost
+        payload = viewer.encode_paths(["a.csv"])
+
+        reply = _raw_exchange(server.port, [payload[:-3]], pause=0.0)  # then silence
+
+        assert reply != viewer.INSTANCE_ACK
+        assert server.queue.empty()
+
+    def test_a_connection_that_closes_early_is_not_acknowledged(self, server):
+        with socket.create_connection((HOST, server.port), timeout=3.0) as s:
+            s.sendall(b'["a.csv"')
+            s.shutdown(socket.SHUT_WR)
+            s.settimeout(3.0)
+            assert s.recv(64) != viewer.INSTANCE_ACK
+        assert server.queue.empty()
+
+    def test_an_oversized_message_is_refused(self, server):
+        reply = _raw_exchange(server.port, [b"x" * (viewer.MAX_HANDOFF_BYTES + 1000)], pause=0.0)
+
+        assert reply != viewer.INSTANCE_ACK
+        assert server.queue.empty()
+
+    def test_the_server_keeps_serving_after_a_bad_connection(self, server):
+        _raw_exchange(server.port, [b'["half'], pause=0.0)
+
+        assert viewer.send_paths_to_running_instance(["ok.csv"], host=HOST, port=server.port)
+        assert _wait_for_queue(server) == ["ok.csv"]

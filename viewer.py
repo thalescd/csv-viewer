@@ -380,6 +380,29 @@ def clipboard_row(values):
     return "\t".join(clipboard_field(v) for v in values)
 
 
+def decimal_point_text(text):
+    """`text` with a decimal comma turned into a decimal point, for float().
+
+    Exports from Excel in Portuguese write 1234,5 and 1.234,56, which float()
+    refuses, so a column of them sorted as text ("10,5" before "9,5"). When both
+    separators are present the one that comes last is the decimal mark, which
+    also covers 1,234.56. A lone comma is taken as a decimal mark, so 1,234 is
+    1.234 and not 1234; that is the reading this program's users expect, and a
+    thousands separator on its own is too ambiguous to guess.
+
+    Anything that still is not a number afterwards (1,2,3 or a word with a
+    comma) is left for float() to reject, and sorts as text as before.
+    """
+    text = text.strip()
+    if "," not in text:
+        return text
+    if "." in text:
+        if text.rfind(",") > text.rfind("."):
+            return text.replace(".", "").replace(",", ".")
+        return text.replace(",", "")
+    return text.replace(",", ".")
+
+
 def cell_sort_key(value):
     """Ordering key for a cell value: finite numbers first, then text.
 
@@ -392,10 +415,12 @@ def cell_sort_key(value):
 
     Non-finite values fall through to the text branch, where they order
     stably next to the other unparseable cells.
+
+    A decimal comma counts as a number too (see decimal_point_text).
     """
     try:
-        number = float(value)
-    except (TypeError, ValueError):
+        number = float(decimal_point_text(str(value)))
+    except ValueError:
         pass
     else:
         if math.isfinite(number):

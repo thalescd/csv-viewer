@@ -57,3 +57,41 @@ class TestCellSortKey:
         first = ordered(values)
         assert ordered(list(reversed(values))) == first
         assert ordered(sorted(values)) == first
+
+
+class TestDecimalComma:
+    """Exports from Excel in Portuguese write 1234,5 -- a number, not text."""
+
+    def test_a_decimal_comma_sorts_by_value_not_as_text(self):
+        # as text, "10,5" would come before "9,5"
+        assert ordered(["10,5", "9,5", "100,25"]) == ["9,5", "10,5", "100,25"]
+
+    def test_decimal_comma_and_decimal_point_sort_together(self):
+        assert ordered(["2,5", "1.5", "10"]) == ["1.5", "2,5", "10"]
+
+    def test_thousands_dots_with_a_decimal_comma(self):
+        assert ordered(["1.234,56", "999,9", "12.345,6"]) == ["999,9", "1.234,56", "12.345,6"]
+
+    def test_thousands_commas_with_a_decimal_point(self):
+        assert ordered(["1,234.56", "999.9", "12,345.6"]) == ["999.9", "1,234.56", "12,345.6"]
+
+    def test_negatives_with_a_decimal_comma(self):
+        assert ordered(["-1,5", "-10,5", "0"]) == ["-10,5", "-1,5", "0"]
+
+    def test_numbers_with_a_comma_still_sort_before_text(self):
+        assert ordered(["abc", "3,5", "1"]) == ["1", "3,5", "abc"]
+
+    @pytest.mark.parametrize("text", ["1,2,3", "a,b", "1,2x", ",", "nan,5"])
+    def test_a_comma_that_does_not_make_a_number_stays_text(self, text):
+        assert viewer.cell_sort_key(text)[0] == 1
+
+    @pytest.mark.parametrize(
+        ("text", "number"),
+        [("1,5", "1.5"), ("1.234,56", "1234.56"), ("1,234.56", "1234.56"), (" 7,25 ", "7.25"), ("42", "42")],
+    )
+    def test_decimal_point_text(self, text, number):
+        assert viewer.decimal_point_text(text) == number
+
+    def test_non_text_values_still_have_a_key(self):
+        assert viewer.cell_sort_key(None)[0] == 1
+        assert viewer.cell_sort_key(5)[0] == 0

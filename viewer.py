@@ -1106,26 +1106,63 @@ class CSVTab(ttk.Frame):
             ).pack(side=tk.RIGHT, padx=(0, 10))
 
     # ---------- loading ----------
+    @contextlib.contextmanager
+    def _busy(self):
+        """A "working" cursor for a stretch that blocks the window.
+
+        Reading and showing a big file runs on the main thread, so the window
+        cannot repaint or respond until it is done. update_idletasks() lets the
+        cursor change land first, so it does not look like a hang.
+        """
+        top = self.winfo_toplevel()
+        top.configure(cursor="watch")
+        self.update_idletasks()
+        try:
+            yield
+        finally:
+            with contextlib.suppress(tk.TclError):
+                top.configure(cursor="")
+
     def load(self, filepath, delimiter=None):
         """Reads `filepath` into the tab. True when the file is now showing,
-        False when it could not be read (the error was already reported and
-        the tab is left as it was)."""
+        False when it could not be read or the user chose not to open it (an
+        error was already reported, and the tab is left as it was)."""
+        name = os.path.basename(filepath)
+        previous_status = self.status_var.get()
+        self.status_var.set(f"Loading {name}...")
         try:
-            header, rows, used_delim, used_enc = read_csv_file(filepath, delimiter=delimiter)
+            with self._busy():
+                header, rows, used_delim, used_enc = read_csv_file(filepath, delimiter=delimiter)
         except Exception as exc:
+            self.status_var.set(previous_status)
             messagebox.showerror("Error opening file", str(exc))
+            return False
+
+        # Parsing is the cheap part (~1 s for 200,000 rows); putting the rows
+        # into the table is what freezes the window (~3 s for the same file), and
+        # only now is the row count known. Ask before paying for that, rather
+        # than mentioning it in the status bar afterwards.
+        n_rows = len(rows)
+        large = n_rows > MAX_ROWS_WARN
+        if large and not messagebox.askyesno(
+            "Large file",
+            f"{name} has {n_rows:,} rows.\n\nShowing that many can freeze the window "
+            "for several seconds and use a lot of memory.\n\nOpen it anyway?",
+            default=messagebox.NO,
+        ):
+            self.status_var.set(previous_status)
             return False
 
         self.filepath = filepath
         self.header = header
         self.rows = rows
         self._set_delim_ui(used_delim)
-        self._populate_tree()
+        with self._busy():
+            self._populate_tree()
 
-        n_rows = len(rows)
-        warn = "  (large file, may be slow)" if n_rows > MAX_ROWS_WARN else ""
+        warn = "  (large file, may be slow)" if large else ""
         self.status_var.set(
-            f"{os.path.basename(filepath)}  |  {n_rows} rows x {len(header)} columns  "
+            f"{name}  |  {n_rows} rows x {len(header)} columns  "
             f"|  delimiter: {used_delim!r}  |  encoding: {used_enc}{warn}"
         )
         return True

@@ -102,3 +102,81 @@ class TestOpenFile:
         assert len(csv_tabs(app)) == 2
         assert app.notebook.select() == str(csv_tabs(app)[0])
         assert app.recent_files[0] == path  # re-opening still counts as recent
+
+
+@pytest.fixture
+def asked(monkeypatch):
+    """Records the "large file" question, answered by `asked.answer`."""
+    class Asked(list):
+        answer = True
+
+    log = Asked()
+
+    def fake(title, message, **_kw):
+        log.append((title, message))
+        return log.answer
+
+    monkeypatch.setattr(viewer.messagebox, "askyesno", fake)
+    monkeypatch.setattr(viewer, "MAX_ROWS_WARN", 2)
+    return log
+
+
+def big_file(tmp_path, rows=5, name="big.csv"):
+    p = tmp_path / name
+    p.write_text("a,b\n" + "".join(f"{i},x\n" for i in range(rows)), encoding="utf-8")
+    return str(p)
+
+
+class TestLargeFile:
+    def test_a_small_file_opens_without_a_question(self, app, tmp_path, asked):
+        app.open_file(big_file(tmp_path, rows=2))
+
+        assert asked == []
+        assert len(csv_tabs(app)) == 1
+
+    def test_a_large_file_asks_first_and_says_how_many_rows(self, app, tmp_path, asked):
+        app.open_file(big_file(tmp_path, rows=5))
+
+        assert len(asked) == 1
+        assert "5 rows" in asked[0][1]
+
+    def test_saying_yes_opens_it_and_notes_it_is_large(self, app, tmp_path, asked):
+        asked.answer = True
+
+        app.open_file(big_file(tmp_path, rows=5))
+
+        (tab,) = csv_tabs(app)
+        assert len(tab.rows) == 5
+        assert "large file" in tab.status_var.get()
+
+    def test_saying_no_opens_nothing_and_remembers_nothing(self, app, tmp_path, asked):
+        asked.answer = False
+
+        app.open_file(big_file(tmp_path, rows=5))
+
+        assert csv_tabs(app) == []
+        assert app.recent_files == []
+        assert [app.notebook.tab(t, "text") for t in app.notebook.tabs()] == ["(empty)"]
+
+    def test_saying_no_to_a_reload_keeps_what_was_showing(self, app, tmp_path, asked):
+        path = big_file(tmp_path, rows=2)
+        app.open_file(path)
+        (tab,) = csv_tabs(app)
+        status = tab.status_var.get()
+        big_file(tmp_path, rows=9)  # the file grew behind our back
+        asked.answer = False
+
+        tab.reload()
+
+        assert len(tab.rows) == 2
+        assert tab.status_var.get() == status
+
+    def test_the_busy_cursor_is_put_back_afterwards(self, app, tmp_path, asked):
+        app.open_file(big_file(tmp_path, rows=5))
+
+        assert str(app.cget("cursor")) == ""
+
+    def test_the_busy_cursor_is_put_back_after_a_failure(self, app, tmp_path, errors):
+        app.open_file(undecodable_file(tmp_path))
+
+        assert str(app.cget("cursor")) == ""

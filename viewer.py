@@ -491,9 +491,14 @@ def read_csv_file(path, delimiter=None):
 
     header = rows[0]
     data = rows[1:]
-    # normalize column count (short rows get "" padding at the end)
-    ncols = len(header)
-    data = [r + [""] * (ncols - len(r)) if len(r) < ncols else r[:ncols] for r in data]
+    # The table is as wide as the widest row, not just the header: a row with
+    # more fields than the header has (a short header, a stray delimiter) used
+    # to be cut at the header's width, so those values simply never appeared
+    # and nothing said so. The extra columns get blank names, and shorter rows
+    # are padded with "" at the end.
+    ncols = max(len(r) for r in rows)
+    header = header + [""] * (ncols - len(header))
+    data = [r + [""] * (ncols - len(r)) for r in data]
     return header, data, delimiter, used_encoding
 
 

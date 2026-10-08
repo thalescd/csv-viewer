@@ -71,14 +71,23 @@ class TestReadCsvFile:
         assert header == ["a", "b", "c"]
         assert rows == [["1", "2", ""]]
 
-    def test_long_rows_are_truncated(self, tmp_path):
+    def test_long_rows_widen_the_table_instead_of_being_cut(self, tmp_path):
         p = tmp_path / "data.csv"
         p.write_text("a,b\n1,2,3,4\n", encoding="utf-8")
 
         header, rows, _, _ = viewer.read_csv_file(str(p))
 
-        assert header == ["a", "b"]
-        assert rows == [["1", "2"]]
+        assert header == ["a", "b", "", ""]
+        assert rows == [["1", "2", "3", "4"]]
+
+    def test_the_widest_row_sets_the_width_for_every_row(self, tmp_path):
+        p = tmp_path / "data.csv"
+        p.write_text("a,b\n1,2\n1,2,3\n1\n", encoding="utf-8")
+
+        header, rows, _, _ = viewer.read_csv_file(str(p))
+
+        assert header == ["a", "b", ""]
+        assert rows == [["1", "2", ""], ["1", "2", "3"], ["1", "", ""]]
 
     def test_empty_file_returns_empty_header_and_rows(self, tmp_path):
         p = tmp_path / "empty.csv"

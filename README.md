@@ -34,8 +34,8 @@ single script, and a UI that stays fast and simple even on very large files.
 - **Find (`Ctrl+F`)** -- searches column names as well as cell values, so
   typing a column name jumps to that column. `Enter`/`↓` for the next match,
   `Shift+Enter`/`↑` for the previous one.
-- **Zoom (50%-200%)** -- buttons in the status bar, `Ctrl +`/`Ctrl -`/
-  `Ctrl 0`, or `Ctrl+scroll`. Persisted across restarts.
+- **Zoom (50%-200%)** -- buttons in the status bar (*Reset* goes back to
+  100%), `Ctrl +`/`Ctrl -`, or `Ctrl+scroll`. Persisted across restarts.
 - **Dark mode** -- toggle in the status bar or the View menu. Persisted
   across restarts.
 - **Recent files** -- up to 10, listed under *File > Open Recent*, with
@@ -53,7 +53,7 @@ single script, and a UI that stays fast and simple even on very large files.
 
 ## Requirements
 
-- Python 3.8+ (stdlib only -- no dependencies required to run the app).
+- Python 3.9+ (stdlib only -- no dependencies required to run the app).
 - Optional: [`tkinterdnd2`](https://pypi.org/project/tkinterdnd2/) for
   drag-and-drop support. Without it, everything else still works normally.
 
@@ -159,7 +159,7 @@ up alongside the app.
 | Right-click a header | Column menu (copy column / with header / name) |
 | Right-click a cell | Cell menu (copy cell / column / row) |
 | `Ctrl+click` (cell) | Open link |
-| `Ctrl +` / `Ctrl -` / `Ctrl 0` | Zoom in / out / reset |
+| `Ctrl +` / `Ctrl -` | Zoom in / out |
 | `Ctrl+scroll` | Zoom in / out |
 | `Ctrl+1`...`Ctrl+9`, `Ctrl+0` | Open 1st-10th recent file |
 | Hold middle mouse button | Pan mode |

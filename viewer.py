@@ -732,7 +732,6 @@ class CSVTab(ttk.Frame):
 
         # drag to reorder columns (also selects the clicked cell)
         self.tree.bind("<ButtonPress-1>", self._on_heading_press)
-        self.tree.bind("<B1-Motion>", self._on_heading_drag)
         self.tree.bind("<ButtonRelease-1>", self._on_heading_release)
         # double-click on the border between columns -> auto-fits width to content
         self.tree.bind("<Double-Button-1>", self._on_heading_double_click)
@@ -1645,9 +1644,6 @@ class CSVTab(ttk.Frame):
                 self._resize_start_width = self.tree.column(self._resize_col, "width")
         if region == "cell":
             self._select_cell(event.x, event.y)
-
-    def _on_heading_drag(self, event):
-        pass  # optional visual feedback; kept simple
 
     def _finish_manual_resize(self):
         """Pins a column the user just resized, so fitting stops touching it."""

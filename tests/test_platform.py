@@ -1,4 +1,6 @@
 """Tests for the bits that differ between Windows and everything else."""
+import os
+
 import viewer
 
 
@@ -28,10 +30,12 @@ class TestConfigDir:
     def test_elsewhere_honours_xdg_config_home(self, monkeypatch):
         monkeypatch.delenv("APPDATA", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/me/.config")
-        assert viewer._config_dir() == "/home/me/.config/CSVViewer"
+        # built with os.path.join, like the code: the separator is the platform's
+        assert viewer._config_dir() == os.path.join("/home/me/.config", "CSVViewer")
 
     def test_falls_back_to_dot_config_in_the_home_dir(self, monkeypatch):
         monkeypatch.delenv("APPDATA", raising=False)
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         monkeypatch.setenv("HOME", "/home/me")
-        assert viewer._config_dir() == "/home/me/.config/CSVViewer"
+        monkeypatch.setenv("USERPROFILE", "/home/me")  # what "~" means on Windows
+        assert viewer._config_dir() == os.path.join("/home/me", ".config", "CSVViewer")

@@ -96,6 +96,8 @@ def test_right_click_on_a_link_selects_that_link_cell(tab, label, menu):
 
 
 def test_the_wheel_scrolls_the_table_over_a_link_on_x11(tab, label):
+    if tab.tk.call("tk", "windowingsystem") != "x11":
+        pytest.skip("button 5 is only how X11 reports the wheel")
     before = tab.tree.yview()[0]
 
     label.event_generate("<Button-5>", x=10, y=5)
@@ -114,14 +116,17 @@ def test_the_wheel_scrolls_the_table_over_a_link_on_windows_and_macos(tab, label
 
 
 def test_scrolling_over_a_link_goes_as_far_as_scrolling_over_a_plain_cell(tab, label):
+    # <MouseWheel> scrolls on every platform (Button-5 only does on X11), and
+    # the distance must be non-zero or the comparison below proves nothing
     start = tab.tree.yview()[0]
-    tab.tree.event_generate("<Button-5>", x=10, y=100)
+    tab.tree.event_generate("<MouseWheel>", x=10, y=100, delta=-120)
     tab.update()
     plain = tab.tree.yview()[0] - start
+    assert plain > 0
 
     tab.tree.yview_moveto(start)
     tab.update()
-    label.event_generate("<Button-5>", x=10, y=5)
+    label.event_generate("<MouseWheel>", x=10, y=5, delta=-120)
     tab.update()
 
     assert tab.tree.yview()[0] - start == pytest.approx(plain)

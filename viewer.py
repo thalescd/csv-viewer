@@ -654,13 +654,34 @@ class CSVTab(ttk.Frame):
     # ---------- select/copy cell ----------
     def _select_cell(self, x, y):
         row = self.tree.identify_row(y)
-        col = self.tree.identify_column(x)
+        col = self._data_column(self.tree.identify_column(x))
         if not row or not col:
             self._selected_cell = None
             self._hide_cell_highlight()
             return
         self._selected_cell = (row, col)
         self._update_cell_highlight()
+
+    def _data_column(self, col_id):
+        """The column name ("cN") behind either form of identifier, or None.
+
+        A click hands us a display id: "#n", 1-based and counting the columns
+        as they sit on screen right now, which a drag may have reordered.
+        Search hits hand us the name instead. Everything that reads the data
+        indexes the header, so both forms get normalized here first.
+        """
+        if not col_id:
+            return None
+        if col_id.startswith("#"):
+            cols = self._display_columns()
+            pos = int(col_id[1:]) - 1
+            return cols[pos] if 0 <= pos < len(cols) else None
+        return col_id if col_id in self.tree["columns"] else None
+
+    def _column_index(self, col_id):
+        """Index into the header (and into a row) for a column, or None."""
+        name = self._data_column(col_id)
+        return int(name[1:]) if name else None
 
     def _display_columns(self):
         """Column ids in the order they are currently shown."""
@@ -730,8 +751,8 @@ class CSVTab(ttk.Frame):
             return
         row, col = self._selected_cell
         if row == HEADER_ROW:  # a search landed on a column name
-            idx = int(col[1:])
-            value = str(self.header[idx]) if idx < len(self.header) else ""
+            idx = self._column_index(col)
+            value = str(self.header[idx]) if idx is not None and idx < len(self.header) else ""
         elif self.tree.exists(row):
             value = self.tree.set(row, col)
         else:
@@ -1196,9 +1217,14 @@ class CSVTab(ttk.Frame):
 
     # ---------- sorting ----------
     def _sort_by(self, col_id):
-        ascending = self.sort_state.get(col_id, True)
+        # a header click arrives as a display id ("#n"), which is a position on
+        # screen, not an index into the row -- normalize before reading data
+        col_name = self._data_column(col_id)
+        if col_name is None:
+            return
+        col_index = int(col_name[1:])
+        ascending = self.sort_state.get(col_name, True)
         # read the column out of the rows we hold, not one tree.set() per row
-        col_index = int(col_id[1:])
         items = []
         for iid in self.tree.get_children(""):
             row = self._rows_by_iid.get(iid)
@@ -1210,15 +1236,13 @@ class CSVTab(ttk.Frame):
             self.tree.move(iid, "", index)
         self._restripe()
 
-        self.sort_state[col_id] = not ascending
+        self.sort_state[col_name] = not ascending
         # update the header text with a direction indicator
-        idx = int(col_id[1:])
-        base_name = self.header[idx]
         arrow = " ▲" if ascending else " ▼"
         for cid in self.tree["columns"]:
             i = int(cid[1:])
             self.tree.heading(cid, text=self.header[i])
-        self.tree.heading(col_id, text=base_name + arrow)
+        self.tree.heading(col_name, text=self.header[col_index] + arrow)
 
     # ---------- reorder columns (drag on the header) ----------
     def _on_heading_press(self, event):

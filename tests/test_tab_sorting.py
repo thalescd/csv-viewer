@@ -34,7 +34,7 @@ def tab():
 
 
 def shown(tab, col=0):
-    return [tab._rows_by_iid[i][col] for i in tab.tree.get_children("")]
+    return [tab.rows[r][col] for r in tab._order]
 
 
 def test_sorting_orders_the_rows_on_screen(tab):
@@ -57,12 +57,9 @@ def test_the_second_click_reverses_the_order(tab):
 
 
 def test_every_row_is_still_there_exactly_once(tab):
-    before = set(tab.tree.get_children(""))
-
     tab._sort_by("#2")
 
-    assert len(tab.tree.get_children("")) == 5
-    assert set(tab.tree.get_children("")) == before
+    assert sorted(tab._order) == [0, 1, 2, 3, 4]
 
 
 def test_the_stripes_follow_the_new_order(tab):
@@ -91,8 +88,8 @@ class TestSearchAfterSorting:
         return tab
 
     def results(self, tab):
-        return [tab._rows_by_iid[iid][0] if iid != viewer.HEADER_ROW else iid
-                for iid, _col in tab._search_matches]
+        return [tab.rows[row][0] if row != viewer.HEADER_ROW else row
+                for row, _col in tab._search_matches]
 
     def test_the_results_follow_the_new_screen_order(self, searched):
         assert self.results(searched) == ["ax3", "ax1", "ax2"]
@@ -122,7 +119,7 @@ class TestSearchAfterSorting:
         searched._search_step(1)
 
         row, _col = searched._selected_cell
-        assert searched._rows_by_iid[row][0] == "ax1"
+        assert searched.rows[row][0] == "ax1"
 
     def test_sorting_without_a_search_is_unaffected(self, tab):
         tab._sort_by("#1")

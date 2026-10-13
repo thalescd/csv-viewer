@@ -44,6 +44,10 @@ single script, and a UI that stays fast and simple even on very large files.
   scroll in that direction, browser/PDF-reader style.
 - **Auto-hiding scrollbars** -- only shown when there's actually something
   to scroll.
+- **Big files** -- only the rows on screen exist as widgets, so a file with
+  hundreds of thousands of rows opens, scrolls and sorts quickly. Memory is
+  then what the data itself takes; past 100 MB the viewer asks before reading
+  the file.
 - **Drag and drop** files onto the window to open them in a new tab
   (requires the optional `tkinterdnd2` dependency).
 - **Middle-click a tab** to close it, browser style.
@@ -166,6 +170,9 @@ up alongside the app.
 | Hold middle mouse button | Pan mode |
 | Middle-click a tab | Close that tab |
 | Double-click a column border | Auto-fit column width |
+| `Up` / `Down` | Scroll one row |
+| `PageUp` / `PageDown` | Scroll one page |
+| `Home` / `End` | Jump to the first / last row |
 
 ## Project layout
 
@@ -220,3 +227,14 @@ implemented by overlaying small widgets (thin `Frame`s / `Label`s) on top
 of the tree, repositioned on a lightweight periodic loop so they track
 scrolling, resizing and zoom. This keeps the app dependency-free while still
 looking closer to a spreadsheet than a bare native listview.
+
+### The table is virtual
+
+A `Treeview` with one item per row gets slow and memory-hungry long before the
+data does (200,000 rows took about 2.4 s to open and 420 MB). So the widget only
+holds as many items as fit in the window and refills them as you scroll: the
+rows live in a plain list, `_order` says which row sits at each position (sorting
+reorders that list and never touches the widget), and `_top` is the position of
+the first row shown. Scrolling, the scrollbar and the keyboard are therefore the
+program's own, and the widget's built-in row highlight is switched off; the
+selected cell is outlined instead.

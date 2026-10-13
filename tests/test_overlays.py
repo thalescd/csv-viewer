@@ -92,7 +92,7 @@ def test_overlays_sit_on_the_cells_at_the_top(tab):
 
 
 def test_overlays_follow_a_vertical_scroll_far_past_the_first_rows(tab):
-    tab.tree.yview_moveto(0.6)
+    tab.scroll_to_fraction(0.6)
     redraw(tab)
     assert_overlays_sit_on_the_cells(tab)
 

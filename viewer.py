@@ -45,14 +45,11 @@ __version__ = "0.2.0"
 
 DELIMITER_PRESETS = [(",", ","), (";", ";"), ("Tab", "\t"), ("|", "|")]
 
-# row-count limit, just a basic memory/UI safeguard
-MAX_ROWS_WARN = 200_000
-
 # Reading a file holds its text, then every parsed row, and the peak is far
 # larger than the file: measured at about 12 times its size (a 16 MB file peaked
-# at 193 MB), before the table copies the rows again. So the file's size on
-# disk is checked before it is read -- the row count only exists afterwards,
-# when the memory is already spent. 100 MB is roughly 1.2 GB of peak.
+# at 193 MB); what stays afterwards is the parsed rows, about 5 times the file.
+# So the file's size on disk is checked before it is read, while the memory is
+# still free. 100 MB is roughly 1.2 GB of peak.
 MAX_FILE_BYTES_WARN = 100 * 1024 * 1024
 READ_PEAK_TO_FILE_SIZE = 12  # for the estimate shown to the user, not a guarantee
 
@@ -624,7 +621,15 @@ class CSVTab(ttk.Frame):
         self.filepath = filepath
         self.header = []
         self.rows = []
-        self._rows_by_iid = {}  # tree item id -> the row it was built from
+        # Virtual table: the widget holds only as many items ("slots") as fit on
+        # screen, and they are re-filled from `rows` as the user scrolls. `_order`
+        # says which row of `rows` sits at each position, so sorting reorders a
+        # list of numbers and never touches the widget.
+        self._order = []  # position -> index into self.rows
+        self._inv = None  # row index -> position; built when needed, dropped on sort
+        self._top = 0  # position of the first row shown
+        self._slots = []  # tree item ids, top to bottom
+        self._slot_index = {}  # tree item id -> its place in _slots
         self.sort_state = {}  # col_id -> ascending bool
         self._drag_col = None
         self._drag_start_x = None
@@ -638,7 +643,7 @@ class CSVTab(ttk.Frame):
         self.zoom_label_var = zoom_label_var
         self.on_zoom_delta = on_zoom_delta
         self.on_zoom_reset = on_zoom_reset
-        self._selected_cell = None  # (row_iid, col_id) of the clicked cell, for copying
+        self._selected_cell = None  # (row index into self.rows or HEADER_ROW, col_id) of the clicked cell
         self._cell_highlight_frames = []  # 4 thin borders around the selected cell
         self._column_flash_frames = []  # same idea, outlining a whole column after a copy
         self._column_flash_after_id = None
@@ -747,13 +752,14 @@ class CSVTab(ttk.Frame):
         container = ttk.Frame(self)
         container.pack(fill=tk.BOTH, expand=True)
 
-        self.tree = ttk.Treeview(container, show="headings")
-        vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
+        # selectmode none: the widget's own row highlight would stay on its slot
+        # while the data scrolls past it; the cell highlight is drawn by us.
+        self.tree = ttk.Treeview(container, show="headings", selectmode="none")
+        vsb = ttk.Scrollbar(container, orient="vertical", command=self._on_vscroll)
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(
-            yscrollcommand=self._make_autohide_scrollbar(vsb),
-            xscrollcommand=self._make_autohide_scrollbar(hsb),
-        )
+        # the tree never scrolls vertically by itself: the scrollbar is ours
+        self._vsb_set = self._make_autohide_scrollbar(vsb)
+        self.tree.configure(xscrollcommand=self._make_autohide_scrollbar(hsb))
 
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
@@ -783,6 +789,14 @@ class CSVTab(ttk.Frame):
         self.tree.bind("<ButtonPress-2>", self._start_pan)
         self.tree.bind("<ButtonRelease-2>", lambda e: self._stop_pan())
         self.tree.bind("<Motion>", self._on_motion)
+        # vertical scrolling is ours too (the wheel arrives as <MouseWheel> or, on X11, buttons 4 and 5)
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.tree.bind(sequence, self._on_wheel)
+        self.tree.bind("<Configure>", lambda e: self._fit_slots())
+        # ...and so is the keyboard: the widget's own arrow keys move its row selection, which is off
+        for key in ("<Up>", "<Down>", "<Prior>", "<Next>", "<Home>", "<End>",
+                    "<Control-Home>", "<Control-End>"):
+            self.tree.bind(key, self._on_scroll_key)
 
     def _on_motion(self, event):
         region = self.tree.identify_region(event.x, event.y)
@@ -809,9 +823,9 @@ class CSVTab(ttk.Frame):
 
     # ---------- select/copy cell ----------
     def _select_cell(self, x, y):
-        row = self.tree.identify_row(y)
+        row = self._row_of_iid(self.tree.identify_row(y))
         col = self._data_column(self.tree.identify_column(x))
-        if not row or not col:
+        if row is None or not col:
             self._selected_cell = None
             self._hide_cell_highlight()
             return
@@ -862,7 +876,7 @@ class CSVTab(ttk.Frame):
         (about 0.3 ms at row 25,000). The header's height is remembered, which
         leaves two such calls per lookup in the common case instead of a scan.
         """
-        if not self._rows_by_iid or not self._display_columns():
+        if not self._slots or not self._display_columns():
             return None
         if self._header_y is not None:
             iid = self.tree.identify_row(self._header_y + 2)
@@ -919,9 +933,10 @@ class CSVTab(ttk.Frame):
                 return None
             x, _y, w, _h = bbox
             return (x, 0, w, self._header_height())
-        if not self.tree.exists(row):
-            return None
-        return self.tree.bbox(row, col) or None
+        slot = self._position_of(row) - self._top
+        if not 0 <= slot < len(self._slots):
+            return None  # scrolled out of view
+        return self.tree.bbox(self._slots[slot], col) or None
 
     def _update_cell_highlight(self):
         if not self._selected_cell:
@@ -985,10 +1000,10 @@ class CSVTab(ttk.Frame):
         row, col = self._selected_cell
         if row == HEADER_ROW:  # a search, or a right-click, landed on a column name
             value = self._column_name(col)
-        elif self.tree.exists(row):
-            value = self.tree.set(row, col)
         else:
-            return
+            idx = self._column_index(col)
+            data = self.rows[row] if 0 <= row < len(self.rows) else ()
+            value = data[idx] if idx is not None and idx < len(data) else ""
         self.clipboard_clear()
         self.clipboard_append(value)
         preview = value if len(value) <= 60 else value[:60] + "..."
@@ -1009,18 +1024,14 @@ class CSVTab(ttk.Frame):
     def _column_values(self, col_id):
         """A column's values, in the order the rows are on screen right now.
 
-        Sorting moves the items inside the widget, so walking get_children()
-        is what makes the copy match what the user is looking at instead of
-        the order the file happened to have.
+        Walking `_order` is what makes the copy match what the user is looking
+        at instead of the order the file happened to have.
         """
         idx = self._column_index(col_id)
         if idx is None:
             return []
-        values = []
-        for iid in self.tree.get_children(""):
-            row = self._rows_by_iid.get(iid)
-            values.append(row[idx] if row is not None and idx < len(row) else "")
-        return values
+        rows = self.rows
+        return [rows[r][idx] if idx < len(rows[r]) else "" for r in self._order]
 
     def _copy_column(self, col_id, with_header=False):
         name = self._column_name(col_id)
@@ -1037,10 +1048,10 @@ class CSVTab(ttk.Frame):
             return
         self._set_clipboard(name, f"Copied: {name}")
 
-    def _copy_row(self, row_iid):
-        row = self._rows_by_iid.get(row_iid)
-        if row is None:
+    def _copy_row(self, row_index):
+        if not 0 <= row_index < len(self.rows):
             return
+        row = self.rows[row_index]
         # follow the columns as they are shown, which a drag may have reordered
         values = []
         for cid in self._display_columns():
@@ -1166,7 +1177,7 @@ class CSVTab(ttk.Frame):
         if sx:
             self.tree.xview_scroll(sx, "units")
         if sy:
-            self.tree.yview_scroll(sy, "units")
+            self._scroll_rows(sy)
 
         with contextlib.suppress(tk.TclError):
             self._pan_after_id = self.after(PAN_TICK_MS, self._pan_tick)
@@ -1234,8 +1245,8 @@ class CSVTab(ttk.Frame):
         name = os.path.basename(filepath)
         previous_status = self.status_var.get()
 
-        # Ask about a big file before reading it. If it is confirmed here, the
-        # question about its rows further down is not asked a second time.
+        # Ask about a big file before reading it: the memory is spent by the
+        # read, not by showing the rows (the table only holds what is on screen).
         confirmed_large = False
         try:
             size = os.path.getsize(filepath)
@@ -1263,20 +1274,7 @@ class CSVTab(ttk.Frame):
             messagebox.showerror("Error opening file", str(exc))
             return False
 
-        # Parsing is the cheap part (~1 s for 200,000 rows); putting the rows
-        # into the table is what freezes the window (~3 s for the same file), and
-        # only now is the row count known. Ask before paying for that, rather
-        # than mentioning it in the status bar afterwards.
         n_rows = len(rows)
-        large = n_rows > MAX_ROWS_WARN
-        if large and not confirmed_large and not messagebox.askyesno(
-            "Large file",
-            f"{name} has {n_rows:,} rows.\n\nShowing that many can freeze the window "
-            "for several seconds and use a lot of memory.\n\nOpen it anyway?",
-            default=messagebox.NO,
-        ):
-            self.status_var.set(previous_status)
-            return False
 
         self.filepath = filepath
         self.header = header
@@ -1285,7 +1283,7 @@ class CSVTab(ttk.Frame):
         with self._busy():
             self._populate_tree()
 
-        warn = "  (large file, may be slow)" if large or confirmed_large else ""
+        warn = "  (large file)" if confirmed_large else ""
         self.status_var.set(
             f"{name}  |  {n_rows} rows x {len(header)} columns  "
             f"|  delimiter: {used_delim!r}  |  encoding: {used_enc}{warn}"
@@ -1374,14 +1372,13 @@ class CSVTab(ttk.Frame):
         # natural way of looking for a column rather than for a value
         matches = [(HEADER_ROW, cols[i]) for i in header_match_columns(self.header, query)]
 
-        # One Tcl round trip for the display order, then the scan runs entirely
-        # over the rows we already hold. Asking the tree for each cell instead
-        # cost a round trip per cell and froze the window on every keystroke.
-        ordered_iids = self.tree.get_children("")
-        ordered_rows = [self._rows_by_iid.get(iid, ()) for iid in ordered_iids]
+        # The scan runs over the rows we hold, in screen order, so "next" walks
+        # down the screen. A hit is named by its row index in `rows`, which
+        # stays the same when the rows are sorted.
+        ordered_rows = map(self.rows.__getitem__, self._order)
         matches += [
-            (ordered_iids[r], cols[c])
-            for r, c in cells_containing(ordered_rows, query, len(cols))
+            (self._order[pos], cols[c])
+            for pos, c in cells_containing(ordered_rows, query, len(cols))
         ]
         return matches
 
@@ -1407,16 +1404,12 @@ class CSVTab(ttk.Frame):
             self._update_search_status()
             return
         self._search_index = (self._search_index + direction) % len(self._search_matches)
-        row_iid, col_id = self._search_matches[self._search_index]
-        if row_iid == HEADER_ROW:
-            self._ensure_column_visible(col_id)
-            self._selected_cell = (row_iid, col_id)
-            self._update_cell_highlight()
-        elif self.tree.exists(row_iid):
-            self.tree.see(row_iid)
-            self._ensure_column_visible(col_id)
-            self._selected_cell = (row_iid, col_id)
-            self._update_cell_highlight()
+        row, col_id = self._search_matches[self._search_index]
+        if row != HEADER_ROW:
+            self._show_row(row)
+        self._ensure_column_visible(col_id)
+        self._selected_cell = (row, col_id)
+        self._update_cell_highlight()
         self._update_search_status()
 
     def _ensure_column_visible(self, col_id):
@@ -1446,6 +1439,8 @@ class CSVTab(ttk.Frame):
     # ---------- tree population ----------
     def _populate_tree(self):
         self.tree.delete(*self.tree.get_children())
+        self._slots = []
+        self._slot_index = {}
         cols = [f"c{i}" for i in range(len(self.header))]
         self.tree["columns"] = cols
         self.tree["displaycolumns"] = cols
@@ -1469,14 +1464,13 @@ class CSVTab(ttk.Frame):
             self.tree.heading(cid, text=name)
             self.tree.column(cid, width=120, minwidth=MIN_COLUMN_WIDTH, anchor="w", stretch=False)
 
-        # iid -> the row behind it, so search and sort can read the data in
-        # memory instead of asking the widget for it cell by cell
-        # The zebra stripe goes in with the row. A separate pass over every row
-        # afterwards (_restripe) cost a quarter of the load time on a big file.
-        self._rows_by_iid = {}
-        for position, row in enumerate(self.rows):
-            tag = "evenrow" if position % 2 == 0 else "oddrow"
-            self._rows_by_iid[self.tree.insert("", tk.END, values=row, tags=(tag,))] = row
+        # only the rows that fit on screen become widget items
+        self._order = list(range(len(self.rows)))
+        self._inv = None
+        self._top = 0
+        self._slots = []
+        self._slot_index = {}
+        self._fit_slots()
 
         if self.fit_columns and self.header:
             self._measure_content_widths()
@@ -1499,11 +1493,139 @@ class CSVTab(ttk.Frame):
         self.tree.tag_configure("evenrow", background=palette["stripe_even"])
         self.tree.tag_configure("oddrow", background=palette["stripe_odd"])
 
-    def _restripe(self):
-        """Reapplies the alternating row colors based on the current order."""
-        for i, iid in enumerate(self.tree.get_children("")):
-            tag = "evenrow" if i % 2 == 0 else "oddrow"
-            self.tree.item(iid, tags=(tag,))
+    # ---------- virtual table: slots, scrolling ----------
+    def _row_height(self):
+        try:
+            return int(ttk.Style(self).lookup("Treeview", "rowheight") or BASE_ROW_HEIGHT)
+        except (TypeError, ValueError):
+            return BASE_ROW_HEIGHT
+
+    def _page_rows(self):
+        """How many rows fit on screen right now (at least 1)."""
+        height = self.tree.winfo_height()
+        if height <= 1:  # not drawn yet
+            return 30
+        header = self._header_y if self._header_y is not None else 26
+        return max(1, (height - header) // self._row_height())
+
+    def _fit_slots(self):
+        """Gives the widget as many items as the screen can show, and fills them.
+
+        Runs on load, on resize and on zoom (the row height changes). Two spare
+        items cover a partly visible last row.
+        """
+        want = min(len(self._order), self._page_rows() + 2)
+        if want == len(self._slots):
+            self._render()
+            return
+        while len(self._slots) < want:
+            iid = self.tree.insert("", tk.END, values=())
+            self._slot_index[iid] = len(self._slots)
+            self._slots.append(iid)
+        while len(self._slots) > want:
+            iid = self._slots.pop()
+            del self._slot_index[iid]
+            self.tree.delete(iid)
+        self._render()
+
+    def _render(self):
+        """Fills the items with the rows that belong at the current scroll position."""
+        n = len(self._order)
+        self._top = max(0, min(self._top, n - min(self._page_rows(), n)))
+        blank = [""] * len(self.header)
+        item = self.tree.item
+        for i, iid in enumerate(self._slots):
+            pos = self._top + i
+            row = self.rows[self._order[pos]] if pos < n else blank
+            item(iid, values=row, tags=("evenrow" if pos % 2 == 0 else "oddrow",))
+        self._update_vscroll()
+        self._refresh_cell_overlays()
+
+    def _refresh_cell_overlays(self):
+        """Redraws the link labels and the selected-cell outline for the rows now shown.
+
+        Left to the 150 ms redraw loop they would show last page's links over
+        this page's rows for a moment after every scroll step, because here the
+        contents change at once, where a scrolled widget only moved them.
+        """
+        if not self.winfo_ismapped():
+            return
+        top = self._locate_top()
+        spans = self._column_spans(top[1][0]) if top else []
+        self._update_link_overlays(spans, top)
+        self._update_cell_highlight()
+
+    def _update_vscroll(self):
+        n = len(self._order)
+        if n == 0:
+            self._vsb_set(0.0, 1.0)
+            return
+        page = min(self._page_rows(), n)
+        self._vsb_set(self._top / n, min(1.0, (self._top + page) / n))
+
+    def _scroll_to(self, top):
+        n = len(self._order)
+        top = max(0, min(top, n - min(self._page_rows(), n)))
+        if top != self._top:
+            self._top = top
+            self._render()
+
+    def _scroll_rows(self, count):
+        self._scroll_to(self._top + count)
+
+    def scroll_to_fraction(self, fraction):
+        self._scroll_to(round(fraction * len(self._order)))
+
+    def _on_vscroll(self, *args):
+        """What the scrollbar sends: ("moveto", f) or ("scroll", n, "units"|"pages")."""
+        if args[0] == "moveto":
+            self.scroll_to_fraction(float(args[1]))
+        else:
+            step = int(args[1]) * (self._page_rows() if args[2] == "pages" else 1)
+            self._scroll_rows(step)
+
+    def _on_wheel(self, event):
+        direction = wheel_direction(event.num, event.delta)
+        if event.state & 0x1:  # Shift: sideways, as in any Tk widget
+            self.tree.xview_scroll(-3 * direction, "units")
+        else:
+            self._scroll_rows(-3 * direction)
+        return "break"
+
+    def _on_scroll_key(self, event):
+        page = max(1, self._page_rows() - 1)  # keep one row of overlap, like most viewers
+        steps = {"Up": -1, "Down": 1, "Prior": -page, "Next": page}
+        if event.keysym in steps:
+            self._scroll_rows(steps[event.keysym])
+        elif event.keysym == "Home":
+            self._scroll_to(0)
+        else:  # End
+            self._scroll_to(len(self._order))
+        return "break"
+
+    def _position_of(self, row_index):
+        """Where on screen order a row of `rows` sits."""
+        if self._inv is None:
+            inv = [0] * len(self._order)
+            for position, row in enumerate(self._order):
+                inv[row] = position
+            self._inv = inv
+        return self._inv[row_index]
+
+    def _row_of_iid(self, iid):
+        """The row of `rows` shown in a widget item, or None (empty area, blank filler)."""
+        slot = self._slot_index.get(iid)
+        if slot is None:
+            return None
+        pos = self._top + slot
+        return self._order[pos] if pos < len(self._order) else None
+
+    def _show_row(self, row_index):
+        """Scrolls just enough for a row to be on screen, centred when it has to move."""
+        pos = self._position_of(row_index)
+        page = self._page_rows()
+        if not self._top <= pos < self._top + page:
+            self._scroll_to(pos - page // 2)
 
     def _detect_link_columns(self):
         """Samples the rows to find out which columns have URL-like values."""
@@ -1657,20 +1779,13 @@ class CSVTab(ttk.Frame):
             return
         col_index = int(col_name[1:])
         ascending = self.sort_state.get(col_name, True)
-        # read the column out of the rows we hold, not one tree.set() per row
-        items = []
-        for iid in self.tree.get_children(""):
-            row = self._rows_by_iid.get(iid)
-            value = row[col_index] if row is not None and col_index < len(row) else ""
-            items.append((value, iid))
-
+        rows = self.rows
+        items = [(rows[r][col_index] if col_index < len(rows[r]) else "", r) for r in self._order]
         items.sort(key=lambda pair: cell_sort_key(pair[0]), reverse=not ascending)
-        # One call puts every row in its new place. Moving them one at a time
-        # (tree.move) looks the same but is quadratic: Tk walks the list of rows
-        # to find each position, so 20,000 rows took 1.7 s, 40,000 took 13 s and
-        # 200,000 would take minutes, with the window frozen for all of it.
-        self.tree.set_children("", *[iid for _, iid in items])
-        self._restripe()
+        # Only the order changes; the widget is just re-filled from it.
+        self._order = [r for _, r in items]
+        self._inv = None
+        self._render()
         self._resync_search_order()
 
         self.sort_state[col_name] = not ascending
@@ -1830,6 +1945,7 @@ class CSVTab(ttk.Frame):
         the old size and cut the text off. It is measured again when next needed.
         """
         self._content_widths = {}
+        self._fit_slots()  # the row height changed too
         if self.fit_columns and self.header:
             self._measure_content_widths()
             self._apply_column_fit()

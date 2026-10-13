@@ -50,7 +50,8 @@ def tab(root, tmp_path):
 
 
 def shown_rows(tab):
-    return [tab._rows_by_iid[iid] for iid in tab.tree.get_children("")]
+    """The rows in the order they are on screen (the table holds only the visible ones)."""
+    return [tab.rows[r] for r in tab._order]
 
 
 class TestDataColumn:
@@ -120,20 +121,18 @@ class TestCopyColumn:
 
 class TestCopyRow:
     def test_the_fields_are_tab_separated_in_display_order(self, tab):
-        first = tab.tree.get_children("")[0]
-        tab._copy_row(first)
+        tab._copy_row(tab._order[0])
         assert tab.clipboard_get() == "zeca\t10\tporto"
 
     def test_it_follows_a_column_that_was_dragged(self, tab):
         tab._reorder_columns("c0", "c2")  # nome moves to the end
-        first = tab.tree.get_children("")[0]
-        tab._copy_row(first)
+        tab._copy_row(tab._order[0])
         assert tab.clipboard_get() == "10\tporto\tzeca"
 
 
 class TestSelectionDrivenCopies:
     def test_a_clicked_cell_is_remembered_by_name_not_by_position(self, tab, monkeypatch):
-        first = tab.tree.get_children("")[0]
+        first = tab._slots[0]
         # the window is withdrawn here, so nothing has pixel coordinates to
         # click at: stand in for what a click over the second column reports
         monkeypatch.setattr(tab.tree, "identify_row", lambda y: first)
@@ -142,17 +141,16 @@ class TestSelectionDrivenCopies:
         tab._select_cell(10, 10)
 
         # "#2" would go stale the moment a column is dragged elsewhere
-        assert tab._selected_cell == (first, "c1")
+        # ...and the row by its place in the data, not by the widget item showing it
+        assert tab._selected_cell == (tab._order[0], "c1")
 
     def test_ctrl_shift_c_copies_the_selected_cells_column(self, tab):
-        first = tab.tree.get_children("")[0]
-        tab._selected_cell = (first, "c1")
+        tab._selected_cell = (tab._order[0], "c1")
         tab._copy_selected_column()
         assert tab.clipboard_get() == "10\n30\n20"
 
     def test_copying_the_row_of_the_selected_cell(self, tab):
-        second = tab.tree.get_children("")[1]
-        tab._selected_cell = (second, "c1")
+        tab._selected_cell = (tab._order[1], "c1")
         tab._copy_selected_row()
         assert tab.clipboard_get() == "ana\t30\tbage"
 

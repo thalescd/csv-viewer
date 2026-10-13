@@ -16,6 +16,7 @@ import codecs
 import contextlib
 import csv
 import getpass
+import heapq
 import io
 import json
 import math
@@ -109,10 +110,19 @@ def open_link(value):
     webbrowser.open(value)
 
 # when measuring how wide a column's content is, only look at up to this many
-# rows. Fitting every column at once multiplies this by the column count, so
-# it has to stay modest; the trade-off is that an unusually wide value further
-# down a huge file may not be accounted for.
+# rows; the trade-off is that an unusually wide value further down a huge file
+# may not be accounted for.
 AUTOSIZE_SAMPLE_LIMIT = 2000
+
+# ...and of those, only this many values per column are actually measured: the
+# longest distinct ones. One font.measure() call costs about 0.7 ms on some
+# systems (X11 here), whatever the text, so measuring every value of the sample
+# took ~9 s for 6 columns -- at every zoom step with "Fit columns" on, and when
+# opening a file or double-clicking a border. The widest text is almost always
+# among the longest ones; shortcut: a narrow-glyph string that is long can crowd
+# out a wider short one, which only matters if more than this many longer
+# distinct values exist, and the column's padding absorbs the small difference.
+AUTOSIZE_MEASURE_COUNT = 20
 
 # column sizing: breathing room added to the measured text, and the ceiling a
 # fitted column may reach. The ceiling matters because fitting also raises the
@@ -187,6 +197,11 @@ def header_match_columns(header, query):
     """Indexes of the columns whose name contains `query` (case-insensitive)."""
     q = query.lower()
     return [i for i, name in enumerate(header) if q in str(name).lower()]
+
+
+def widest_candidates(values, count=AUTOSIZE_MEASURE_COUNT):
+    """The `count` longest distinct values: the ones worth measuring for a column's width."""
+    return heapq.nlargest(count, set(values), key=len)
 
 
 def fitted_column_width(text_widths, padding=COLUMN_PADDING,
@@ -1906,7 +1921,7 @@ class CSVTab(ttk.Frame):
         self._content_widths = {}
         for idx, name in enumerate(self.header):
             widths = [heading_font.measure(str(name))]
-            widths.extend(body_font.measure(str(row[idx])) for row in sample)
+            widths.extend(body_font.measure(text) for text in widest_candidates(row[idx] for row in sample))
             self._content_widths[f"c{idx}"] = fitted_column_width(widths)
 
     def _apply_column_fit(self):

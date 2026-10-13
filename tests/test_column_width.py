@@ -25,3 +25,33 @@ class TestFittedColumnWidth:
     def test_uses_the_module_defaults(self):
         expected = min(300 + viewer.COLUMN_PADDING, viewer.AUTOFIT_MAX_WIDTH)
         assert viewer.fitted_column_width([300]) == expected
+
+
+class TestWidestCandidates:
+    """Only the longest distinct values of a column are worth measuring."""
+
+    def test_returns_the_longest_first(self):
+        assert viewer.widest_candidates(["a", "abc", "ab", "abcd"], count=2) == ["abcd", "abc"]
+
+    def test_a_value_that_repeats_is_listed_once(self):
+        assert viewer.widest_candidates(["Bage"] * 1000 + ["Pelotas"] * 1000, count=5) == ["Pelotas", "Bage"]
+
+    def test_fewer_values_than_the_count_gives_them_all(self):
+        assert sorted(viewer.widest_candidates(["a", "bb"], count=20)) == ["a", "bb"]
+
+    def test_no_values_gives_nothing(self):
+        assert viewer.widest_candidates([]) == []
+
+    def test_accepts_any_iterable(self):
+        assert viewer.widest_candidates((v for v in ["a", "abc"]), count=1) == ["abc"]
+
+    def test_the_widest_value_is_always_among_them_wherever_it_sits(self):
+        values = [f"v{i}" for i in range(5000)]
+        values[3333] = "the widest by far, hidden in the middle"
+
+        assert viewer.widest_candidates(values)[0] == "the widest by far, hidden in the middle"
+
+    def test_the_default_count_is_the_module_constant(self):
+        values = [str(i) * (i % 7 + 1) for i in range(500)]
+
+        assert len(viewer.widest_candidates(values)) == viewer.AUTOSIZE_MEASURE_COUNT

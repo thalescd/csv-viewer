@@ -193,6 +193,19 @@ def wheel_direction(num, delta):
     return 1 if delta > 0 else -1
 
 
+def select_all_text(event):
+    """Ctrl+A in a text field: select all of it.
+
+    Tk's own binding on X11 is the Emacs one: Ctrl+A jumps to the start of the
+    line, so nothing was selected. Windows already selects everything; binding
+    this there too just makes every platform agree.
+    """
+    field = event.widget
+    field.select_range(0, tk.END)
+    field.icursor(tk.END)
+    return "break"
+
+
 def header_match_columns(header, query):
     """Indexes of the columns whose name contains `query` (case-insensitive)."""
     q = query.lower()
@@ -708,12 +721,14 @@ class CSVTab(ttk.Frame):
         )
         self.delim_combo.pack(side=tk.LEFT)
         self.delim_combo.bind("<<ComboboxSelected>>", lambda e: self._on_delimiter_change())
+        self._bind_select_all(self.delim_combo)
 
         ttk.Label(bar, text="  Custom:").pack(side=tk.LEFT)
         self.custom_delim_var = tk.StringVar(value="")
         custom_entry = ttk.Entry(bar, textvariable=self.custom_delim_var, width=4)
         custom_entry.pack(side=tk.LEFT, padx=(2, 6))
         custom_entry.bind("<Return>", lambda e: self._apply_custom_delimiter())
+        self._bind_select_all(custom_entry)
 
         self.auto_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
@@ -724,6 +739,11 @@ class CSVTab(ttk.Frame):
         ttk.Button(bar, text="Reload", command=self.reload).pack(side=tk.LEFT)
 
         self._build_search_bar(bar)
+
+    @staticmethod
+    def _bind_select_all(field):
+        for sequence in ("<Control-a>", "<Control-A>"):  # the capital is Caps Lock or Shift
+            field.bind(sequence, select_all_text)
 
     def _build_search_bar(self, bar):
         """Search bar (Ctrl+F) -- stays hidden until triggered."""
@@ -736,8 +756,11 @@ class CSVTab(ttk.Frame):
         self._search_entry = ttk.Entry(self._search_frame, textvariable=self._search_var, width=20)
         self._search_entry.pack(side=tk.LEFT)
         self._search_var.trace_add("write", lambda *a: self._on_search_text_changed())
-        self._search_entry.bind("<Return>", lambda e: self._search_step(1))
-        self._search_entry.bind("<Shift-Return>", lambda e: self._search_step(-1))
+        # Return and the numeric keypad's Enter are different keys to Tk
+        for key in ("Return", "KP_Enter"):
+            self._search_entry.bind(f"<{key}>", lambda e: self._search_step(1))
+            self._search_entry.bind(f"<Shift-{key}>", lambda e: self._search_step(-1))
+        self._bind_select_all(self._search_entry)
         self._search_entry.bind("<Down>", lambda e: self._search_step(1))
         self._search_entry.bind("<Up>", lambda e: self._search_step(-1))
         self._search_entry.bind("<Escape>", self.hide_search)
@@ -1370,7 +1393,12 @@ class CSVTab(ttk.Frame):
         self._search_after_id = self.after(200, self._run_search)
 
     def _run_search(self):
-        self._search_after_id = None
+        # Whoever runs the search, a timer still waiting to run it again must go:
+        # it would fire later and start over from the first hit.
+        if self._search_after_id is not None:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._search_after_id)
+            self._search_after_id = None
         query = self._search_var.get()
         self._search_matches = self._compute_matches(query) if query else []
         self._search_index = -1
@@ -1415,6 +1443,12 @@ class CSVTab(ttk.Frame):
         self._update_search_status()
 
     def _search_step(self, direction):
+        # The search runs 200 ms after the last keystroke. Enter (or an arrow or
+        # a button) pressed inside that gap would walk through the results of
+        # the PREVIOUS text, and then the real search would start over from the
+        # first hit. Run it now instead, so the step goes through the right results.
+        if self._search_after_id is not None:
+            self._run_search()
         if not self._search_matches:
             self._update_search_status()
             return
@@ -2198,9 +2232,11 @@ class CSVViewerApp(_AppBase):
             self.style.configure("TLabel", background=p["app_bg"], foreground=p["fg"])
             self.style.configure("TButton", background=p["heading_bg"], foreground=p["fg"])
             self.style.configure("TCheckbutton", background=p["app_bg"], foreground=p["fg"])
+            # insertcolor is the text cursor: it defaults to black, invisible on the dark field
             self.style.configure("TCombobox", fieldbackground=p["entry_bg"],
-                                 background=p["heading_bg"], foreground=p["fg"])
-            self.style.configure("TEntry", fieldbackground=p["entry_bg"], foreground=p["fg"])
+                                 background=p["heading_bg"], foreground=p["fg"], insertcolor=p["fg"])
+            self.style.configure("TEntry", fieldbackground=p["entry_bg"], foreground=p["fg"],
+                                 insertcolor=p["fg"])
             self.style.configure("TNotebook", background=p["app_bg"])
             self.style.configure("TNotebook.Tab", background=p["heading_bg"], foreground=p["fg"])
             self.style.map("TNotebook.Tab", background=[("selected", p["select_bg"])],

@@ -43,7 +43,7 @@ except ImportError:
 # Single source of truth for the version. The release workflow refuses to build
 # when the git tag disagrees with this, so a published build can never claim a
 # version it was not tagged as.
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 DELIMITER_PRESETS = [(",", ","), (";", ";"), ("Tab", "\t"), ("|", "|")]
 

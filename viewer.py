@@ -2425,6 +2425,7 @@ class CSVViewerApp(_AppBase):
     def _show_update_dialog(self):
         release = self._update_offer
         dialog = tk.Toplevel(self)
+        dialog.withdraw()  # shown once it is placed, so it does not flash at the corner first
         dialog.title("Update Available")
         dialog.transient(self)
         dialog.resizable(False, False)
@@ -2454,7 +2455,22 @@ class CSVViewerApp(_AppBase):
         ttk.Button(buttons, text="Skip This Version", command=skip).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Later", command=dialog.destroy).pack(side=tk.LEFT)
         dialog.bind("<Escape>", lambda e: dialog.destroy())
+        self._center_on_window(dialog)
+        dialog.deiconify()
         return dialog
+
+    def _center_on_window(self, dialog):
+        """Places `dialog` over the middle of the main window.
+
+        A Toplevel with no position opens wherever the window manager likes;
+        on Windows that is the top-left corner of the main monitor, which can
+        be another screen entirely. (messagebox dialogs centre themselves.)
+        """
+        dialog.update_idletasks()  # so the requested size is known
+        x = self.winfo_rootx() + (self.winfo_width() - dialog.winfo_reqwidth()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dialog.winfo_reqheight()) // 2
+        # "+-100" is valid: a monitor left of the main one has negative coordinates
+        dialog.geometry(f"+{x}+{y}")
 
     # ---------- recent files (Ctrl+1..9, Ctrl+0) ----------
     def _init_recent_files(self):

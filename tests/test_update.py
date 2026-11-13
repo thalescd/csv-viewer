@@ -263,3 +263,18 @@ class TestAutomaticStart:
         app._config["update_last_check"] = time.time()
         app._start_auto_update_check()
         assert started == []
+
+
+def test_dialog_opens_over_the_main_window(app):
+    # it used to open at the top-left of the main monitor, even with the app on another one
+    app.deiconify()
+    app.geometry("800x600+300+200")
+    app.update()
+    app._offer_update(NEWER)
+    dialog = app._show_update_dialog()
+    dialog.update()
+    app_centre = (app.winfo_rootx() + app.winfo_width() // 2, app.winfo_rooty() + app.winfo_height() // 2)
+    dialog_centre = (dialog.winfo_rootx() + dialog.winfo_width() // 2,
+                     dialog.winfo_rooty() + dialog.winfo_height() // 2)
+    assert abs(app_centre[0] - dialog_centre[0]) <= 40
+    assert abs(app_centre[1] - dialog_centre[1]) <= 40

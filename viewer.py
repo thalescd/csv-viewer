@@ -29,6 +29,7 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import urllib.request
 import webbrowser
 import zlib
 from tkinter import filedialog, messagebox, ttk
@@ -272,6 +273,62 @@ def save_config(config):
             json.dump(config, f)
     except OSError:
         pass  # don't crash the app if saving fails (e.g. no permission)
+
+
+# ---------- update check ----------
+# The app only says that a newer release exists and opens its page; getting it
+# is still the user's download (see the README's "Download" section).
+RELEASES_URL = "https://github.com/thalescd/csv-viewer/releases"
+LATEST_RELEASE_API = "https://api.github.com/repos/thalescd/csv-viewer/releases/latest"
+UPDATE_CHECK_INTERVAL = 24 * 60 * 60  # seconds between automatic checks
+RELEASE_NOTES_MAX_CHARS = 1500  # the dialog is a plain label, not a scrolling view
+
+
+def parse_version(text):
+    """(major, minor, patch) from "1.2.3" or a tag like "v1.2.3"; None for anything else."""
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", str(text).strip())
+    return tuple(int(n) for n in match.groups()) if match else None
+
+
+def parse_release(data):
+    """{"version", "tag", "notes"} for the release the GitHub API describes.
+
+    This comes from the network, so none of it is trusted: the tag has to be a
+    plain version, and the page opened later is built from it rather than
+    taken from a URL in the response. Raises ValueError for anything else.
+    """
+    tag = data.get("tag_name") if isinstance(data, dict) else None
+    version = parse_version(tag) if isinstance(tag, str) else None
+    if version is None:
+        raise ValueError(f"unexpected release tag: {tag!r}")
+    notes = data.get("body")
+    notes = notes if isinstance(notes, str) else ""
+    # the release workflow appends a compare link; the page the dialog opens has it already
+    notes = re.sub(r"\*\*Full Changelog\*\*:.*", "", notes).strip()
+    if len(notes) > RELEASE_NOTES_MAX_CHARS:
+        notes = notes[:RELEASE_NOTES_MAX_CHARS].rstrip() + "..."
+    return {"version": version, "tag": tag.strip(), "notes": notes}
+
+
+def fetch_latest_release(timeout=5):
+    """The newest published release (see parse_release). Raises on any failure."""
+    request = urllib.request.Request(LATEST_RELEASE_API, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"CSVViewer/{__version__}",
+    })
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return parse_release(json.load(response))
+
+
+def update_check_due(last_check, now, interval=UPDATE_CHECK_INTERVAL):
+    """Whether the automatic check should run, given when the last one did.
+
+    A missing or garbled timestamp counts as "never", and so does one in the
+    future (the clock was moved back), or checks would stop until it caught up.
+    """
+    if isinstance(last_check, bool) or not isinstance(last_check, (int, float)):
+        return True
+    return not 0 <= now - last_check < interval
 
 
 # ---------- single instance ----------
@@ -2052,6 +2109,7 @@ class CSVViewerApp(_AppBase):
         self._init_theme_state()
         self._init_fit_columns_state()
         self._init_recent_files()
+        self._init_update_check()
         self._build_menu()
         self._apply_theme_style()
 
@@ -2087,6 +2145,8 @@ class CSVViewerApp(_AppBase):
         self._instance_server = instance_server
         if instance_server is not None:
             self._poll_instance_queue()
+
+        self._start_auto_update_check()
 
     # ---------- single instance ----------
     def _poll_instance_queue(self):
@@ -2268,6 +2328,125 @@ class CSVViewerApp(_AppBase):
         # zoom affects the Treeview's font/height -- reapply it on top of the theme that just changed
         self._apply_zoom_style()
 
+    # ---------- update check ----------
+    def _init_update_check(self):
+        self.auto_update_var = tk.BooleanVar(value=bool(self._config.get("check_updates", True)))
+        self._update_check_running = False
+        self._update_check_manual = False
+        self._update_offer = None  # the newer release announced in the menu bar, if any
+
+    def toggle_auto_update(self):
+        self._config["check_updates"] = self.auto_update_var.get()
+        save_config(self._config)
+
+    def _start_auto_update_check(self):
+        # only the built app: run from source, the code is whatever git has checked out
+        if (getattr(sys, "frozen", False) and self.auto_update_var.get()
+                and update_check_due(self._config.get("update_last_check"), time.time())):
+            self.check_for_updates()
+
+    def check_for_updates(self, manual=False):
+        """Asks GitHub for the latest release, on a background thread.
+
+        `manual` is the menu command, which reports every outcome; the
+        automatic check stays quiet unless there is something new.
+        """
+        self._update_check_manual = self._update_check_manual or manual
+        if self._update_check_running:
+            return  # the check in flight reports for both
+        self._update_check_running = True
+        result = {}
+
+        def work():
+            try:
+                result["release"] = fetch_latest_release()
+            except Exception as exc:  # offline, blocked, rate-limited, unexpected reply...
+                result["error"] = exc
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+
+        def wait():
+            # Tkinter is not thread-safe: the thread only fills `result`, and
+            # the main thread picks it up here
+            if thread.is_alive():
+                with contextlib.suppress(tk.TclError):
+                    self.after(100, wait)
+                return
+            manual_now = self._update_check_manual
+            self._update_check_running = False
+            self._update_check_manual = False
+            self._on_update_result(result, manual_now)
+
+        with contextlib.suppress(tk.TclError):
+            self.after(100, wait)
+
+    def _on_update_result(self, result, manual):
+        if "error" in result:
+            if manual:
+                messagebox.showerror("Check for Updates", f"Could not check for updates:\n{result['error']}")
+            return  # automatic: the next launch tries again
+        self._config["update_last_check"] = time.time()
+        save_config(self._config)
+        release = result["release"]
+        if release["version"] <= parse_version(__version__):
+            if manual:
+                messagebox.showinfo("Check for Updates", f"CSV Viewer {__version__} is the latest version.")
+            return
+        if not manual and release["tag"] == self._config.get("skipped_update"):
+            return
+        self._offer_update(release)
+        if manual:
+            self._show_update_dialog()
+
+    def _offer_update(self, release):
+        """Announces the release in the menu bar, where it stays until dealt
+        with -- the status bars belong to the tabs, and there may be none."""
+        self._withdraw_update_offer()
+        self._update_offer = release
+        self._menubar.add_command(
+            label=f"Update Available ({release['tag']})", command=self._show_update_dialog
+        )
+
+    def _withdraw_update_offer(self):
+        if self._update_offer is not None:
+            self._menubar.delete(tk.END)  # the offer is always the last entry
+            self._update_offer = None
+
+    def _show_update_dialog(self):
+        release = self._update_offer
+        dialog = tk.Toplevel(self)
+        dialog.title("Update Available")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=16)  # ttk, so it follows the light/dark theme
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            body, text=f"CSV Viewer {release['tag'].lstrip('v')} is available. You have {__version__}."
+        ).pack(anchor="w")
+        if release["notes"]:
+            ttk.Label(body, text=release["notes"], wraplength=460, justify=tk.LEFT).pack(
+                anchor="w", pady=(10, 0)
+            )
+
+        def download():
+            webbrowser.open(f"{RELEASES_URL}/tag/{release['tag']}")
+            dialog.destroy()
+
+        def skip():
+            self._config["skipped_update"] = release["tag"]
+            save_config(self._config)
+            self._withdraw_update_offer()
+            dialog.destroy()
+
+        buttons = ttk.Frame(body)
+        buttons.pack(anchor="e", pady=(16, 0))
+        ttk.Button(buttons, text="Download", command=download).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Skip This Version", command=skip).pack(side=tk.LEFT, padx=6)
+        ttk.Button(buttons, text="Later", command=dialog.destroy).pack(side=tk.LEFT)
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        return dialog
+
     # ---------- recent files (Ctrl+1..9, Ctrl+0) ----------
     def _init_recent_files(self):
         raw = self._config.get("recent_files", [])
@@ -2360,6 +2539,12 @@ class CSVViewerApp(_AppBase):
         menubar.add_cascade(label="View", menu=view_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="Check for Updates...", command=lambda: self.check_for_updates(manual=True))
+        help_menu.add_checkbutton(
+            label="Check for Updates Automatically", variable=self.auto_update_var,
+            command=self.toggle_auto_update,
+        )
+        help_menu.add_separator()
         help_menu.add_command(label="About", command=self._show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
 

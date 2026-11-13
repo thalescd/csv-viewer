@@ -51,6 +51,12 @@ single script, and a UI that stays fast and simple even on very large files.
 - **Drag and drop** files onto the window to open them in a new tab
   (requires the optional `tkinterdnd2` dependency).
 - **Middle-click a tab** to close it, browser style.
+- **Update check** -- *Help > Check for Updates...* asks GitHub for the
+  latest release and offers its download page. The built app also checks on
+  its own, at most once a day, and shows *Update Available* in the menu bar
+  when there is one; turn that off under *Help > Check for Updates
+  Automatically*. It only reads `api.github.com`; nothing about you or your
+  files is sent.
 - **Single instance** -- opening a second file (from Explorer, the command
   line, anywhere) adds a tab to the window that is already open instead of
   spawning another window. Pass `--new-window` to opt out.
@@ -105,20 +111,10 @@ Tcl/Tk extension that `tkinterdnd2` needs for drag-and-drop (PyInstaller does
 not pick that one up on its own).
 
 This is a **one-folder** build on purpose. A `--onefile` build produces a
-single tidy `.exe`, but it unpacks itself into a temp folder on every launch:
-
-| Build | Startup | Size on disk |
-|---|---|---|
-| one-folder (this spec) | ~0.2 s | 17 MB (folder) |
-| `--onefile` | ~1.0 s | 9 MB (single file) |
-
-For a program whose whole job is to open instantly when you double-click a
-CSV, the 5x faster start is worth more than the tidier folder.
-
-The spec also trims what PyInstaller would otherwise bundle by default:
-OpenSSL (~4 MB, reachable only through imports the app never makes) and the
-tkdnd builds for other operating systems (~1.2 MB) — together about a quarter
-of the build.
+single tidy `.exe`, but it unpacks itself into a temp folder on every launch,
+which made startup about 5x slower (~1.0 s against ~0.2 s). For a program
+whose whole job is to open instantly when you double-click a CSV, that is
+worth more than the tidier folder.
 
 ### Associate `.csv`/`.tsv` with the viewer (Windows)
 

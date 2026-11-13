@@ -27,15 +27,6 @@ datas = [
 # the window icon on Linux (see _set_window_icon)
 datas += [("assets/icon.ico", "assets"), ("assets/icon.png", "assets")]
 
-# Nothing here talks to the network beyond a loopback socket, but PyInstaller
-# still drags in OpenSSL (libcrypto + libssl, ~4 MB) because it follows every
-# import it can reach. Dropping it is the single biggest size win.
-#   ssl/_ssl:  unused outright.
-#   _hashlib:  only reachable through random -> hashlib. Without it, hashlib
-#              falls back to its built-in digests, which is all random needs,
-#              and libcrypto stops being pulled in.
-excludes = ["ssl", "_ssl", "_hashlib"]
-
 a = Analysis(
     ["viewer.py"],
     pathex=[],
@@ -45,7 +36,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=excludes,
+    # OpenSSL (~4 MB) used to be excluded here; the update check needs HTTPS now
+    excludes=[],
     noarchive=False,
 )
 

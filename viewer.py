@@ -88,6 +88,11 @@ PALETTES = {
     },
 }
 
+# On X11 a menu's raised edge is drawn in shades of its background, and the
+# dark bottom/right one vanished against the dark window. A ridge has a light
+# line on every side. (Windows draws its own menu borders and ignores this.)
+DARK_MENU_BORDER = {"relief": "ridge", "borderwidth": 2}
+
 # Mouse events a link label hands on to the table underneath it. A label is a
 # widget of its own, so it receives the events over its cell and, having no
 # bindings for these, did nothing with them: no menu on right-click, no scroll
@@ -1181,6 +1186,7 @@ class CSVTab(ttk.Frame):
             menu.configure(
                 bg=palette["menu_bg"], fg=palette["menu_fg"],
                 activebackground=palette["menu_active_bg"], activeforeground=palette["menu_active_fg"],
+                **DARK_MENU_BORDER,
             )
         return menu
 
@@ -2311,6 +2317,9 @@ class CSVViewerApp(_AppBase):
             menu_colors = {
                 "bg": p["menu_bg"], "fg": p["menu_fg"],
                 "activebackground": p["menu_active_bg"], "activeforeground": p["menu_active_fg"],
+                # the check mark of checkbutton entries: dark by default, lost on the dark menu
+                "selectcolor": p["menu_fg"],
+                **DARK_MENU_BORDER,
             }
         else:
             self.style.theme_use(self._native_theme)
@@ -2552,7 +2561,8 @@ class CSVViewerApp(_AppBase):
         # captured untouched, for the same reason as _native_bg above
         self._native_menu_colors = {
             opt: str(menubar.cget(opt))  # cget hands back Tcl objects, not str
-            for opt in ("bg", "fg", "activebackground", "activeforeground")
+            for opt in ("bg", "fg", "activebackground", "activeforeground", "selectcolor",
+                        "relief", "borderwidth")
         }
         self._menubar = menubar
         self._file_menu = file_menu

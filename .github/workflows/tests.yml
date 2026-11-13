@@ -17,6 +17,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.9", "3.12"]
+        # ubuntu-latest (26.04) has no Python 3.9 build; Windows still covers the minimum version
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.9"
     steps:
       - uses: actions/checkout@v4
 
